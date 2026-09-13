@@ -9,6 +9,7 @@ import { headingOf, splitSections } from "../src/analysis/sections.js";
 import { guessJobTitle, highestDegree, monthsFromDateRanges, requiredDegree, requiredYears } from "../src/analysis/signals.js";
 import { findSkills } from "../src/analysis/skills.js";
 import { answerFromAnalysis } from "../src/assistant/engine.js";
+import { thinkingConfigFor } from "../src/assistant/gemini.js";
 import { makePdf, SAMPLE_JD, SAMPLE_RESUME } from "./fixtures.js";
 
 const NOW = new Date("2026-09-13T00:00:00Z");
@@ -136,6 +137,11 @@ describe("assistant (rules mode)", () => {
   it("prioritises required gaps", () => {
     const reply = answerFromAnalysis("What should I improve first?", result);
     assert.ok(reply.content.indexOf("Kubernetes") < reply.content.indexOf("Terraform"));
+  });
+
+  it("keeps Gemini thinking low on 3.x models and leaves 2.x models at their default", () => {
+    assert.deepEqual(thinkingConfigFor("gemini-3.8-flash"), { thinkingLevel: "LOW" });
+    assert.equal(thinkingConfigFor("gemini-2.5-flash"), undefined);
   });
 
   it("handles no analysis", () => {

@@ -27,7 +27,7 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | D-15 | scrypt N=2^17, r=8, p=1 | Argon2id (needs native package), bcrypt | `security/password.ts` |
 | D-16 | Password policy: 8–128 chars (8 from the original UI), no composition rules | Breached-password check, stronger minimum | `routes/auth.ts` |
 | D-17 | Privacy mode on by default; redacts email/phone/URL in evidence; anonymises filename | Off by default; also redact names | `redact.ts`, DB default |
-| D-18 | Gemini call settings: temperature 0.2, 600 max output tokens, 15 s timeout | Other values | `assistant/gemini.ts` |
+| D-18 | Gemini call settings: temperature 0.2, 1024 max output tokens, thinking level LOW on 3.x models (retried without it if a model rejects the level), 15 s timeout; any non-STOP finish (e.g. truncated) falls back to the rule-based answer | Other values | `assistant/gemini.ts` |
 | D-19 | Curated skill dictionary (~140 skills) and heading patterns written for this project | Import a published taxonomy (e.g. ESCO, O*NET) | `skills.ts`, `sections.ts` |
 | D-20 | Signup returns 409 for an existing email (reveals registration) | Always "check your email" (needs email delivery) | `routes/auth.ts` |
 | D-21 | History list capped at 100 most recent analyses | Pagination | `routes/analyses.ts` |
@@ -38,7 +38,7 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | ID | Question |
 |---|---|
 | D-12 | Email notifications: the toggle is saved, but no notification emails are sent (verification emails now use Gmail SMTP, D-36). Password-reset emails are also not built yet |
-| D-23 | Gemini model name: none assumed. Set `GEMINI_MODEL` to the model you choose, or leave it unset for rules-only |
+| D-23 | Gemini model: **user chose `gemini-3.8-flash` (2026-09-13)** from the models their key lists. Set per environment in `GEMINI_MODEL` (local `.env`, Vercel env vars) |
 | D-24 | Learning resources in the Roadmap: the `resource` field is left empty; no URLs were invented. Provide an approved resource list if wanted |
 | D-25 | Evaluation dataset: no accuracy metrics exist. Which resumes/JDs (with consent) should be used to calibrate D-08–D-11? |
 | D-26 | Deployment target (Render, Railway, VPS, Docker…) and domain/HTTPS setup |
