@@ -73,6 +73,9 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
       // Loaded lazily so a PDF-library problem can only break PDF parsing, never the whole API.
       await import("./pdf-polyfill.js");
       const { PDFParse } = await import("pdf-parse");
+      // Use the worker embedded as a data URL: bundlers don't trace pdf.js's worker file path on serverless hosts.
+      const { getData } = await import("pdf-parse/worker");
+      PDFParse.setWorker(getData());
       const parser = new PDFParse({ data: new Uint8Array(buffer), isEvalSupported: false, verbosity: 0 });
       try {
         const result = await parser.getText({ first: config.upload.maxPdfPages });
@@ -88,6 +91,8 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
     }
   } catch (err) {
     if (err instanceof HttpError) throw err;
+    // Log the parser's real reason server-side only; the client gets a generic message.
+    console.warn(`[extract] ${kind} parse failed:`, (err as Error)?.message ?? err);
     throw new HttpError(422, `Could not read ${kind.toUpperCase()} file. Is it corrupt or password-protected?`, "file_corrupt");
   }
   // pdf-parse inserts "-- 1 of 3 --" page markers
