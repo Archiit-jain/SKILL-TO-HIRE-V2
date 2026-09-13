@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+
+# SQLite database and the auto-generated development JWT secret
+server/data/
+
+*.log
+.DS_Store
+Thumbs.db
