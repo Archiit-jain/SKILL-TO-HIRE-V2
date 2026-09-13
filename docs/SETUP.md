@@ -69,6 +69,21 @@ npm start
 (nginx, Caddy or a platform proxy): the session cookie is `Secure` in production and browsers only send it over
 HTTPS (localhost excepted). Set `APP_ORIGIN` to the public URL and `TRUST_PROXY=true` when behind a proxy.
 
+## Vercel preview deployment (for teammates)
+
+The repo deploys to Vercel as a static Vite site plus one serverless function:
+
+- `vercel.json` builds with `vite build` into `dist/` and rewrites `/api/*` to `api/index.ts`, which exports the Express app.
+- When `VERCEL` is set, the server automatically:
+  - stores SQLite at `/tmp/skill2hire.db`. **This is temporary:** accounts and analyses reset whenever Vercel recycles the function instance (after idle periods or on redeploy);
+  - trusts the Vercel proxy (`TRUST_PROXY=true`) so rate limits and the CSRF origin check see the real client;
+  - uses a per-instance random session secret if `JWT_SECRET` isn't set;
+  - limits uploads to **4 MB**, because Vercel rejects request bodies over 4.5 MB.
+- The frontend shows a yellow "Preview build" banner on Vercel builds only.
+
+For persistent data on Vercel, move to a hosted database (Turso/libSQL or Neon Postgres) and set `JWT_SECRET` in
+the Vercel project's environment variables. See DECISIONS.md D-29.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |

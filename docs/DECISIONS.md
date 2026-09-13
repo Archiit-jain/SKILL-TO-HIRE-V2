@@ -44,3 +44,11 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | D-26 | Deployment target (Render, Railway, VPS, Docker…) and domain/HTTPS setup |
 | D-27 | Data retention period for stored analyses (currently kept until the user deletes them) |
 | D-28 | OCR for scanned PDFs (currently rejected with a clear message) |
+| D-29 | Persistent database for the Vercel deployment: the preview uses temporary `/tmp` SQLite (data resets). Options: Turso (libSQL, closest to SQLite), Neon Postgres, or hosting the API elsewhere (Render/Railway) with a disk. Requires a user-created account |
+
+## Deployment decisions (2026-09-13)
+
+| ID | Decision | Status |
+|---|---|---|
+| D-30 | Teammate preview hosted on Vercel team `sillyguysolutions`, deployed from GitHub repo `Archiit-jain/SKILL-TO-HIRE-V2` (auto-deploy on push) | Chosen by user |
+| D-31 | On Vercel the upload limit is 4 MB (platform body limit 4.5 MB), versus 5 MB locally | PENDING APPROVAL (forced by platform) |
