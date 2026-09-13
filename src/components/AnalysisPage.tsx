@@ -21,13 +21,15 @@ interface AnalysisPageProps {
   onAnalysisComplete: (result: AnalysisResult) => void;
 }
 
-const MAX_BYTES = 5 * 1024 * 1024;
+// Vercel functions reject request bodies over 4.5MB, so preview builds use a 4MB limit.
+const MAX_MB = __PREVIEW_DEPLOY__ ? 4 : 5;
+const MAX_BYTES = MAX_MB * 1024 * 1024;
 const MAX_JD_CHARS = 50_000;
 
 function validateFile(file: File, allowed: string[]): string | null {
   const ext = file.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? "";
   if (!allowed.includes(ext)) return `Unsupported file type. Allowed: ${allowed.join(", ")}`;
-  if (file.size > MAX_BYTES) return "File size exceeds 5MB limit";
+  if (file.size > MAX_BYTES) return `File size exceeds ${MAX_MB}MB limit`;
   if (file.size === 0) return "File is empty";
   return null;
 }
@@ -112,7 +114,7 @@ export function AnalysisPage({ onAnalysisComplete }: AnalysisPageProps) {
             >
               <Upload className="w-12 h-12 text-slate-400 mx-auto mb-4" />
               <p className="text-slate-600 mb-2">Drag and drop your resume here, or click to browse</p>
-              <p className="text-sm text-slate-400">PDF or DOCX · Max 5MB</p>
+              <p className="text-sm text-slate-400">PDF or DOCX · Max {MAX_MB}MB</p>
               <input
                 id="resume-upload"
                 type="file"

@@ -29,7 +29,7 @@ export function createApp(db: Db) {
   });
 
   api.get("/health", (_req, res) => {
-    res.json({ status: "ok", assistant: config.gemini ? "gemini" : "rules" });
+    res.json({ status: "ok", assistant: config.gemini ? "gemini" : "rules", ephemeralStorage: config.onVercel });
   });
   api.use("/auth", authRouter(db));
   api.use("/account", accountRouter(db));
@@ -51,7 +51,8 @@ export function createApp(db: Db) {
       return res.status(err.status).json({ error: { code: err.code, message: err.message } });
     }
     if (err instanceof MulterError) {
-      const message = err.code === "LIMIT_FILE_SIZE" ? "File size exceeds 5MB limit" : "Invalid upload";
+      const message =
+        err.code === "LIMIT_FILE_SIZE" ? `File size exceeds ${config.upload.maxBytes / (1024 * 1024)}MB limit` : "Invalid upload";
       return res.status(err.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: { code: "upload", message } });
     }
     const status = (err as { status?: number; type?: string }).status;

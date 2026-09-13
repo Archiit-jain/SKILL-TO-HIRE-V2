@@ -25,7 +25,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new ApiError(res.status, data?.error?.message ?? `Request failed (${res.status})`, data?.error?.code);
+    const fallback = res.status === 413 ? "Upload is too large for the server" : `Request failed (${res.status})`;
+    throw new ApiError(res.status, data?.error?.message ?? fallback, data?.error?.code);
   }
   return data as T;
 }

@@ -8,6 +8,7 @@ import { RoadmapPage } from "@/components/RoadmapPage";
 import { ProgressPage } from "@/components/ProgressPage";
 import { SettingsPage } from "@/components/SettingsPage";
 import { AuthPage } from "@/components/AuthPage";
+import { PreviewBanner } from "@/components/PreviewBanner";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import { AnalysisResult, Page } from "@/types";
@@ -42,7 +43,12 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthPage onLogin={login} onSignup={signup} />;
+    return (
+      <>
+        <PreviewBanner className="fixed top-0 inset-x-0 z-50" />
+        <AuthPage onLogin={login} onSignup={signup} />
+      </>
+    );
   }
 
   const handleAnalysisComplete = (result: AnalysisResult) => {
@@ -64,6 +70,7 @@ export default function App() {
     <div className="flex h-screen bg-slate-50">
       <Sidebar currentPage={currentPage} onNavigate={handleNavigate} user={user} onLogout={logout} />
       <main className="flex-1 overflow-y-auto">
+        <PreviewBanner className="sticky top-0 z-40" />
         {currentPage === "home" && (
           <HomePage onNavigate={handleNavigate} hasAnalysis={!!analysisResult} />
         )}

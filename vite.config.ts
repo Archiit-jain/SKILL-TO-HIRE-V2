@@ -9,6 +9,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    define: {
+      // True when built by Vercel: the preview backend keeps data only in temporary storage.
+      __PREVIEW_DEPLOY__: JSON.stringify(!!process.env.VERCEL),
+    },
     resolve: {
       alias: { "@": path.resolve(__dirname, "src") },
     },
