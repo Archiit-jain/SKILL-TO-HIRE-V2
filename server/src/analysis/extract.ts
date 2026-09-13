@@ -1,5 +1,4 @@
 import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
 import { config } from "../config.js";
 import { HttpError } from "../http.js";
 
@@ -71,6 +70,9 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
   let raw: string;
   try {
     if (kind === "pdf") {
+      // Loaded lazily so a PDF-library problem can only break PDF parsing, never the whole API.
+      await import("./pdf-polyfill.js");
+      const { PDFParse } = await import("pdf-parse");
       const parser = new PDFParse({ data: new Uint8Array(buffer), isEvalSupported: false, verbosity: 0 });
       try {
         const result = await parser.getText({ first: config.upload.maxPdfPages });
