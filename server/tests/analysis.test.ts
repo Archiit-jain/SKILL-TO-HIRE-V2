@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
 import { analyze, extractRequirements } from "../src/analysis/analyze.js";
 import { assertSafeZip, detectKind, extractText } from "../src/analysis/extract.js";
@@ -170,5 +172,21 @@ describe("file handling", () => {
     assert.equal(safeFilename("..\\..\\evil<script>.pdf"), "evil_script_.pdf");
     assert.equal(anonymiseFilename("Priya Sharma CV.docx"), "resume.docx");
     assert.equal(redactPII("mail x@y.io, call 9876543210, see https://x.dev/me"), "mail [email], call [phone], see [link]");
+  });
+});
+
+describe("source hygiene", () => {
+  it("contains no raw control characters (use \\uXXXX escapes in regexes instead)", () => {
+    const root = path.resolve(import.meta.dirname, "..", "..");
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((name) => {
+        const full = path.join(dir, name);
+        if (statSync(full).isDirectory()) return walk(full);
+        return /\.(ts|tsx)$/.test(name) ? [full] : [];
+      });
+    const offenders = ["server/src", "server/tests", "src", "api"]
+      .flatMap((d) => walk(path.join(root, d)))
+      .filter((f) => /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(readFileSync(f, "utf8")));
+    assert.deepEqual(offenders, []);
   });
 });

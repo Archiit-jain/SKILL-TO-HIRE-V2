@@ -7,13 +7,18 @@ export interface UserRow {
   id: string;
   name: string;
   email: string;
+  /** "!" marks an account without a password (created through Google sign-in). */
   password_hash: string;
   token_version: number;
   privacy_mode: number;
   notifications: number;
+  email_verified: number;
+  google_sub: string | null;
   created_at: string;
   updated_at: string;
 }
+
+export const NO_PASSWORD = "!";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -24,22 +29,42 @@ declare global {
   }
 }
 
+function sessionUser(db: Db, req: Request, res: Response): UserRow | null {
+  const token = req.cookies?.[SESSION_COOKIE];
+  if (typeof token !== "string") return null;
+  const claims = verifySession(token);
+  const user = claims ? (db.prepare("SELECT * FROM users WHERE id = ?").get(claims.sub) as UserRow | undefined) : undefined;
+  // token_version mismatch = logged out everywhere / password changed / account deleted.
+  if (!claims || !user || user.token_version !== claims.tv) {
+    clearSessionCookie(res);
+    return null;
+  }
+  return user;
+}
+
 export function requireAuth(db: Db) {
-  const findUser = db.prepare("SELECT * FROM users WHERE id = ?");
   return (req: Request, res: Response, next: NextFunction) => {
-    const token = req.cookies?.[SESSION_COOKIE];
-    const claims = typeof token === "string" ? verifySession(token) : null;
-    const user = claims ? (findUser.get(claims.sub) as UserRow | undefined) : undefined;
-    // token_version mismatch = logged out everywhere / password changed / account deleted.
-    if (!claims || !user || user.token_version !== claims.tv) {
-      if (token) clearSessionCookie(res);
-      return next(new HttpError(401, "Not authenticated", "unauthenticated"));
-    }
+    const user = sessionUser(db, req, res);
+    if (!user) return next(new HttpError(401, "Not authenticated", "unauthenticated"));
     req.user = user;
     next();
   };
 }
 
+/** Attaches req.user when a valid session exists, but lets guests through. */
+export function optionalAuth(db: Db) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    req.user = sessionUser(db, req, res) ?? undefined;
+    next();
+  };
+}
+
 export function publicUser(u: UserRow) {
-  return { name: u.name, email: u.email };
+  return {
+    name: u.name,
+    email: u.email,
+    hasPassword: u.password_hash !== NO_PASSWORD,
+    googleLinked: !!u.google_sub,
+    emailVerified: !!u.email_verified,
+  };
 }

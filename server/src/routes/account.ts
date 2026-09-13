@@ -1,19 +1,22 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "../db.js";
+import type { AppDeps } from "../deps.js";
 import { handler, HttpError, parseBody } from "../http.js";
-import { publicUser, requireAuth, type UserRow } from "../middleware/auth.js";
+import { NO_PASSWORD, publicUser, requireAuth, type UserRow } from "../middleware/auth.js";
 import { authLimiter } from "../middleware/security.js";
 import { hashPassword, verifyPassword } from "../security/password.js";
 import { clearSessionCookie, setSessionCookie, signSession } from "../security/session.js";
-import { emailSchema, nameSchema, passwordSchema } from "./auth.js";
+import { sendVerification } from "../security/verification.js";
+import { assertAcceptableEmail, emailSchema, nameSchema, passwordSchema } from "./auth.js";
 
-export function accountRouter(db: Db) {
+export function accountRouter(db: Db, deps: AppDeps) {
   const router = Router();
   router.use(requireAuth(db));
 
   const getUser = db.prepare("SELECT * FROM users WHERE id = ?");
   const byEmail = db.prepare("SELECT id FROM users WHERE email = ?");
+  const hasPassword = (u: UserRow) => u.password_hash !== NO_PASSWORD;
 
   async function assertPassword(user: UserRow, password: string | undefined) {
     if (!password || !(await verifyPassword(password, user.password_hash))) {
@@ -40,7 +43,10 @@ export function accountRouter(db: Db) {
     })
   );
 
-  /** Update name and/or email. Changing the email requires the current password. */
+  /**
+   * Update name and/or email. A new email needs the current password (if the account has one), must pass the
+   * fake-email checks, and must be verified again before the next login.
+   */
   router.patch(
     "/",
     authLimiter,
@@ -50,33 +56,53 @@ export function accountRouter(db: Db) {
         req.body
       );
       const user = req.user!;
-      if (body.email !== user.email.toLowerCase()) {
+      const emailChanged = body.email !== user.email.toLowerCase();
+      if (emailChanged) {
+        if (!hasPassword(user)) {
+          throw new HttpError(400, "This account signs in with Google. Set a password first to change the email.", "password_required");
+        }
         await assertPassword(user, body.currentPassword);
+        if (!deps.mailer.canDeliver) throw new HttpError(503, "Email changes aren't available yet.", "email_unavailable");
         const other = byEmail.get(body.email) as { id: string } | undefined;
         if (other && other.id !== user.id) throw new HttpError(409, "An account with this email already exists", "email_taken");
+        await assertAcceptableEmail(deps, body.email);
       }
-      db.prepare("UPDATE users SET name = ?, email = ?, updated_at = ? WHERE id = ?").run(
-        body.name,
-        body.email,
-        new Date().toISOString(),
-        user.id
-      );
-      res.json({ user: publicUser(getUser.get(user.id) as unknown as UserRow) });
+      const now = new Date().toISOString();
+      if (emailChanged) {
+        // The Google link belonged to the old address, so it is removed along with the verified flag.
+        db.prepare("UPDATE users SET name = ?, email = ?, email_verified = 0, google_sub = NULL, updated_at = ? WHERE id = ?").run(
+          body.name,
+          body.email,
+          now,
+          user.id
+        );
+        await sendVerification(db, deps.mailer, { id: user.id, name: body.name, email: body.email }).catch((err) =>
+          console.error("[account] verification email failed:", (err as Error).message)
+        );
+      } else {
+        db.prepare("UPDATE users SET name = ?, updated_at = ? WHERE id = ?").run(body.name, now, user.id);
+      }
+      res.json({ user: publicUser(getUser.get(user.id) as unknown as UserRow), verificationSent: emailChanged });
     })
   );
 
-  /** Change password: verifies the current one, then revokes all other sessions. */
+  /**
+   * Change password (verifies the current one) or, for Google-only accounts, set a first password.
+   * Revokes all other sessions.
+   */
   router.put(
     "/password",
     authLimiter,
     handler(async (req, res) => {
       const body = parseBody(
-        z.object({ currentPassword: z.string().max(128), newPassword: passwordSchema }).strict(),
+        z.object({ currentPassword: z.string().max(128).optional(), newPassword: passwordSchema }).strict(),
         req.body
       );
       const user = req.user!;
-      await assertPassword(user, body.currentPassword);
-      if (body.currentPassword === body.newPassword) throw new HttpError(400, "New password must be different", "validation");
+      if (hasPassword(user)) {
+        await assertPassword(user, body.currentPassword);
+        if (body.currentPassword === body.newPassword) throw new HttpError(400, "New password must be different", "validation");
+      }
       const hash = await hashPassword(body.newPassword);
       db.prepare(
         "UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?"
@@ -91,9 +117,17 @@ export function accountRouter(db: Db) {
     "/",
     authLimiter,
     handler(async (req, res) => {
-      const body = parseBody(z.object({ currentPassword: z.string().max(128) }).strict(), req.body);
-      await assertPassword(req.user!, body.currentPassword);
-      db.prepare("DELETE FROM users WHERE id = ?").run(req.user!.id);
+      const body = parseBody(
+        z.object({ currentPassword: z.string().max(128).optional(), confirm: z.string().max(20).optional() }).strict(),
+        req.body
+      );
+      const user = req.user!;
+      if (hasPassword(user)) {
+        await assertPassword(user, body.currentPassword);
+      } else if (body.confirm !== "DELETE") {
+        throw new HttpError(400, 'Type DELETE to confirm account deletion', "confirmation_required");
+      }
+      db.prepare("DELETE FROM users WHERE id = ?").run(user.id);
       clearSessionCookie(res);
       res.status(204).end();
     })

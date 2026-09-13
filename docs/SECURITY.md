@@ -80,6 +80,23 @@ stack traces.
 - Privacy mode (default on) redacts contact details and anonymises the filename.
 - Users can delete individual analyses or their whole account.
 
+## 2b. Accounts, verification and guest access (v1.1)
+
+| Control | Implementation |
+|---|---|
+| Email ownership | Sign-up creates an **unverified** account and no session. A 256-bit random token is emailed as `<APP_ORIGIN>/?verify=<token>`; only its SHA-256 hash is stored. Tokens are single-use, expire (default 24 h), and are replaced when a new one is sent. Login is refused (`403 email_not_verified`) until verified. |
+| Link host | Links are built from `APP_ORIGIN` (env), never from the request's `Host` header, so they can't be poisoned to point elsewhere. |
+| Token leakage | The frontend removes `?verify=` from the address bar immediately (`history.replaceState`) and exchanges it via POST, so it isn't kept in history. |
+| Fake emails | `mailchecker` blocklist (thousands of disposable/temp-mail domains, regularly updated) + DNS check that the domain has an MX (or A) record and no RFC 7505 null MX. DNS timeouts fail open (logged), since the verification link is the real proof of ownership. Applied to sign-up and email changes. |
+| Resend abuse / enumeration | `resend-verification` always returns the same 202 message, sends only for unverified accounts, and has a 60 s per-account cooldown on top of the IP rate limit. |
+| Email change | Requires the current password, re-runs the fake-email checks, marks the account unverified, removes the Google link, and emails a new link. |
+| Google sign-in | Google Identity Services popup → ID token → server verifies with `google-auth-library` (Google's rotating keys, `exp`, `iss`, `aud` = our client ID) and requires `email_verified`. Accounts are matched by Google `sub`, never by a client-supplied email. No client secret is used. |
+| Pre-registration takeover | If someone registered a victim's email with a password but never verified it, the victim's first Google sign-in removes that password, revokes its sessions (token version bump) and deletes pending links. |
+| Google-only accounts | Stored password marker `!` can never verify. They can set a first password in Settings; deletion requires typing `DELETE`. |
+| Guest analysis | One per browser via a random 192-bit `s2h_guest` cookie (httpOnly, SameSite=Strict, `Path=/api`). Checked **before** the upload is parsed; a conditional `INSERT ... WHERE NOT EXISTS` stops parallel requests claiming two. Guests always get privacy mode. History, assistant and settings stay behind login. |
+| Guest limit bypass | Incognito windows or clearing cookies give another free analysis. This was accepted so classmates on shared Wi-Fi aren't blocked (D-34); the per-IP analysis rate limit (30/h) still applies. |
+| CSP for Google | `script-src` adds only `https://accounts.google.com/gsi/client`, `frame-src`/`connect-src` only `https://accounts.google.com/gsi/`, `style-src` its stylesheet; `Cross-Origin-Opener-Policy: same-origin-allow-popups` so the popup can return the credential. |
+
 ## 3. Verified by tests
 
 `server/tests/api.test.ts` checks: hardened cookie flags, duplicate/weak/invalid signup, generic login errors,

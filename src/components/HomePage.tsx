@@ -16,9 +16,10 @@ import {
 interface HomePageProps {
   onNavigate: (page: Page) => void;
   hasAnalysis: boolean;
+  isGuest: boolean;
 }
 
-export function HomePage({ onNavigate, hasAnalysis }: HomePageProps) {
+export function HomePage({ onNavigate, hasAnalysis, isGuest }: HomePageProps) {
   return (
     <div className="min-h-full">
       {/* Hero Section */}
@@ -44,7 +45,7 @@ export function HomePage({ onNavigate, hasAnalysis }: HomePageProps) {
               className="bg-cyan-500 hover:bg-cyan-400 text-slate-900"
               onClick={() => onNavigate("analysis")}
             >
-              Start New Analysis
+              {isGuest && !hasAnalysis ? "Try a Free Analysis" : "Start New Analysis"}
               <ArrowRight className="w-4 h-4 ml-2" />
             </Button>
             {hasAnalysis && (

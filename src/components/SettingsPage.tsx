@@ -121,10 +121,13 @@ export function SettingsPage({ user, onLogout, onUserUpdated, onAccountDeleted }
     setSavingProfile(true);
     setProfileNotice(null);
     try {
-      const { user: updated } = await api.updateProfile(name, email, emailChanged ? profilePassword : undefined);
+      const { user: updated, verificationSent } = await api.updateProfile(name, email, emailChanged ? profilePassword : undefined);
       onUserUpdated(updated);
       setProfilePassword("");
-      setProfileNotice({ kind: "ok", text: "Profile saved" });
+      setProfileNotice({
+        kind: "ok",
+        text: verificationSent ? `Saved. We sent a verification link to ${updated.email}.` : "Profile saved",
+      });
     } catch (err) {
       setProfileNotice({ kind: "error", text: errText(err) });
     } finally {
@@ -139,11 +142,15 @@ export function SettingsPage({ user, onLogout, onUserUpdated, onAccountDeleted }
     if (newPassword !== confirmPassword) return setPasswordNotice({ kind: "error", text: "New passwords do not match" });
     setSavingPassword(true);
     try {
-      await api.changePassword(currentPassword, newPassword);
+      await api.changePassword(newPassword, user.hasPassword ? currentPassword : undefined);
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      setPasswordNotice({ kind: "ok", text: "Password changed. Other devices have been signed out." });
+      if (!user.hasPassword) onUserUpdated({ ...user, hasPassword: true });
+      setPasswordNotice({
+        kind: "ok",
+        text: user.hasPassword ? "Password changed. Other devices have been signed out." : "Password set. You can now also log in with email.",
+      });
     } catch (err) {
       setPasswordNotice({ kind: "error", text: errText(err) });
     } finally {
@@ -171,7 +178,7 @@ export function SettingsPage({ user, onLogout, onUserUpdated, onAccountDeleted }
     setDeleting(true);
     setDeleteNotice(null);
     try {
-      await api.deleteAccount(deletePassword);
+      await api.deleteAccount(user.hasPassword ? { currentPassword: deletePassword } : { confirm: "DELETE" });
       onAccountDeleted();
     } catch (err) {
       setDeleteNotice({ kind: "error", text: errText(err) });
@@ -204,9 +211,15 @@ export function SettingsPage({ user, onLogout, onUserUpdated, onAccountDeleted }
                 <Input id="settings-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={254} autoComplete="email" required className="pl-10" />
               </div>
             </div>
-            {emailChanged && (
+            {user.googleLinked && (
+              <p className="text-xs text-slate-500">Linked to Google sign-in.</p>
+            )}
+            {emailChanged && !user.hasPassword && (
+              <p className="text-sm text-amber-700">This account signs in with Google. Set a password below before changing the email.</p>
+            )}
+            {emailChanged && user.hasPassword && (
               <div>
-                <Label htmlFor="settings-profile-password">Current password (required to change email)</Label>
+                <Label htmlFor="settings-profile-password">Current password (required to change email - you'll need to verify the new address)</Label>
                 <PasswordInput id="settings-profile-password" value={profilePassword} onChange={setProfilePassword} autoComplete="current-password" />
               </div>
             )}
@@ -226,15 +239,19 @@ export function SettingsPage({ user, onLogout, onUserUpdated, onAccountDeleted }
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <KeyRound className="w-5 h-5 text-cyan-600" />
-            Change Password
+            {user.hasPassword ? "Change Password" : "Set a Password"}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={savePassword}>
-            <div>
-              <Label htmlFor="current-password">Current password</Label>
-              <PasswordInput id="current-password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
-            </div>
+            {user.hasPassword ? (
+              <div>
+                <Label htmlFor="current-password">Current password</Label>
+                <PasswordInput id="current-password" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">You sign in with Google. Add a password to also log in with your email.</p>
+            )}
             <div>
               <Label htmlFor="new-password">New password</Label>
               <PasswordInput id="new-password" value={newPassword} onChange={setNewPassword} autoComplete="new-password" placeholder="Minimum 8 characters" />
@@ -244,9 +261,9 @@ export function SettingsPage({ user, onLogout, onUserUpdated, onAccountDeleted }
               <PasswordInput id="confirm-password" value={confirmPassword} onChange={setConfirmPassword} autoComplete="new-password" />
             </div>
             <div className="flex items-center gap-4">
-              <Button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white" disabled={savingPassword || !currentPassword || !newPassword}>
+              <Button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white" disabled={savingPassword || (user.hasPassword && !currentPassword) || !newPassword}>
                 {savingPassword && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                Update Password
+                {user.hasPassword ? "Update Password" : "Set Password"}
               </Button>
               <NoticeBox notice={passwordNotice} />
             </div>
@@ -335,14 +352,19 @@ export function SettingsPage({ user, onLogout, onUserUpdated, onAccountDeleted }
             <div>
               <p className="font-medium text-slate-900">Delete Account</p>
               <p className="text-sm text-slate-500">
-                Permanently delete your account and all associated data. Enter your password to confirm.
+                Permanently delete your account and all associated data.{" "}
+                {user.hasPassword ? "Enter your password to confirm." : "Type DELETE to confirm."}
               </p>
             </div>
             <div className="flex items-end gap-3">
               <div className="flex-1">
-                <PasswordInput id="delete-password" value={deletePassword} onChange={setDeletePassword} autoComplete="current-password" placeholder="Current password" />
+                {user.hasPassword ? (
+                  <PasswordInput id="delete-password" value={deletePassword} onChange={setDeletePassword} autoComplete="current-password" placeholder="Current password" />
+                ) : (
+                  <Input id="delete-confirm" value={deletePassword} onChange={(e) => setDeletePassword(e.target.value)} placeholder="DELETE" aria-label="Type DELETE to confirm" />
+                )}
               </div>
-              <Button type="submit" variant="destructive" disabled={!deletePassword || deleting}>
+              <Button type="submit" variant="destructive" disabled={(user.hasPassword ? !deletePassword : deletePassword !== "DELETE") || deleting}>
                 {deleting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
                 Delete
               </Button>

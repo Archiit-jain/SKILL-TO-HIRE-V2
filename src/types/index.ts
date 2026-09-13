@@ -3,6 +3,21 @@ export type Page = "home" | "analysis" | "results" | "assistant" | "roadmap" | "
 export interface User {
   name: string;
   email: string;
+  hasPassword: boolean;
+  googleLinked: boolean;
+  emailVerified: boolean;
+}
+
+export interface AuthProviders {
+  /** OAuth client ID for "Sign in with Google", or null when not configured. */
+  googleClientId: string | null;
+  /** false when the server can't send verification emails, so email sign-up is disabled. */
+  emailSignup: boolean;
+}
+
+export interface SignupResult {
+  verificationRequired: true;
+  email: string;
 }
 
 export interface UserSettings {

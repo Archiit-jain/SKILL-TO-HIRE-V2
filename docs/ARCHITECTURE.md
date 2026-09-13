@@ -84,7 +84,15 @@ analyses(
 INDEX idx_analyses_user_created(user_id, created_at DESC)
 ```
 
-Deleting a user cascades to their analyses. There are no migrations yet: the schema uses `CREATE TABLE IF NOT EXISTS`.
+```sql
+-- migration 2
+users + email_verified INTEGER, google_sub TEXT (unique when not null)
+email_verifications(token_hash TEXT PK, user_id FK→users CASCADE, expires_at INTEGER, created_at INTEGER)
+guest_analyses(id TEXT PK, guest_id TEXT, result_json TEXT, claimed_by FK→users SET NULL, created_at TEXT)
+```
+
+Deleting a user cascades to their analyses and verification tokens. Migrations live in `server/src/db.ts` and run
+once each, tracked by `PRAGMA user_version`. Append new ones; never edit a released migration.
 
 ## Frontend ↔ backend contract
 

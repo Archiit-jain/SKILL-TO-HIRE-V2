@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { AnalysisResult } from "@/types";
 import {
   Upload,
@@ -15,10 +15,14 @@ import {
   FileUp,
   X,
   AlertCircle,
+  Gift,
 } from "lucide-react";
 
 interface AnalysisPageProps {
   onAnalysisComplete: (result: AnalysisResult) => void;
+  isGuest: boolean;
+  /** The server refused a guest's second analysis: open the login screen with this message. */
+  onLoginRequired: (message: string) => void;
 }
 
 // Vercel functions reject request bodies over 4.5MB, so preview builds use a 4MB limit.
@@ -34,7 +38,7 @@ function validateFile(file: File, allowed: string[]): string | null {
   return null;
 }
 
-export function AnalysisPage({ onAnalysisComplete }: AnalysisPageProps) {
+export function AnalysisPage({ onAnalysisComplete, isGuest, onLoginRequired }: AnalysisPageProps) {
   const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [jdText, setJdText] = useState("");
   const [jdTitle, setJdTitle] = useState("");
@@ -69,6 +73,10 @@ export function AnalysisPage({ onAnalysisComplete }: AnalysisPageProps) {
       const { result } = await api.analyze(form);
       onAnalysisComplete(result);
     } catch (err) {
+      if (err instanceof ApiError && err.code === "login_required") {
+        onLoginRequired(err.message);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
       setIsAnalyzing(false);
@@ -79,6 +87,13 @@ export function AnalysisPage({ onAnalysisComplete }: AnalysisPageProps) {
     <div className="max-w-4xl mx-auto px-8 py-8">
       <h1 className="text-3xl font-bold text-slate-900 mb-2">New Analysis</h1>
       <p className="text-slate-600 mb-8">Upload your resume and target job description to get started.</p>
+
+      {isGuest && (
+        <div role="note" className="flex items-start gap-2 p-4 mb-6 rounded-lg bg-cyan-50 text-cyan-900 text-sm border border-cyan-200">
+          <Gift className="w-4 h-4 mt-0.5 shrink-0" />
+          Your first analysis is free - no account needed. Log in afterwards to save it and run more.
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="flex items-start gap-2 p-4 mb-6 rounded-lg bg-rose-50 text-rose-700 text-sm border border-rose-200">

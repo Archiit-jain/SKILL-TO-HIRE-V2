@@ -26,9 +26,11 @@ function EmptyNote() {
 interface ResultsPageProps {
   result: AnalysisResult;
   onNavigate: (page: Page) => void;
+  isGuest: boolean;
+  onSignIn: () => void;
 }
 
-export function ResultsPage({ result, onNavigate }: ResultsPageProps) {
+export function ResultsPage({ result, onNavigate, isGuest, onSignIn }: ResultsPageProps) {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "strong":
@@ -265,6 +267,23 @@ export function ResultsPage({ result, onNavigate }: ResultsPageProps) {
           </div>
         </CardContent>
       </Card>
+
+      {isGuest && (
+        <Card className="mb-6 bg-cyan-50 border-cyan-200">
+          <CardContent className="p-6 flex flex-col md:flex-row md:items-center gap-4">
+            <div className="flex-1">
+              <h3 className="font-semibold text-slate-900">Save this result and keep going</h3>
+              <p className="text-sm text-slate-600">
+                This was your free analysis. Create an account (or continue with Google) to keep it in your history,
+                chat with the Career Assistant and run more analyses.
+              </p>
+            </div>
+            <Button className="bg-slate-900 hover:bg-slate-800 text-white" onClick={onSignIn}>
+              Create free account
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Next Steps */}
       <div className="flex gap-4">

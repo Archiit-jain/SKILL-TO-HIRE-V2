@@ -12,27 +12,55 @@ import { PreviewBanner } from "@/components/PreviewBanner";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import { AnalysisResult, Page } from "@/types";
-import { Loader2, Target } from "lucide-react";
+import { CheckCircle2, Loader2, Target, X, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+
+/** Pages that need an account. Guests can use Home, one New Analysis, Results and the Roadmap. */
+const LOCKED_PAGES: ReadonlySet<Page> = new Set<Page>(["assistant", "progress", "settings"]);
+
+const LOCKED_NOTICE: Partial<Record<Page, string>> = {
+  assistant: "Log in to chat with the Career Assistant about your results.",
+  progress: "Log in to save your analyses and track progress over time.",
+  settings: "Log in to manage your account settings.",
+};
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>("home");
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const { user, loading, login, signup, logout, setUser, clearUser } = useAuth();
+  const [auth, setAuth] = useState<{ open: boolean; notice: string | null; mode: "login" | "signup" }>({
+    open: false,
+    notice: null,
+    mode: "login",
+  });
+  const {
+    user,
+    loading,
+    providers,
+    verifyOutcome,
+    dismissVerifyOutcome,
+    login,
+    signup,
+    loginWithGoogle,
+    logout,
+    setUser,
+    clearUser,
+  } = useAuth();
 
-  // Load the most recent saved analysis after login so results survive a page refresh.
+  // Load the latest saved analysis (the account's, or this browser's free guest analysis) so results survive a refresh.
   useEffect(() => {
-    if (!user) {
-      setAnalysisResult(null);
-      setCurrentPage("home");
-      return;
-    }
+    if (loading) return;
     api
       .latestAnalysis()
       .then(({ result }) => setAnalysisResult(result))
-      .catch(() => undefined);
-  }, [user?.email]); // eslint-disable-line react-hooks/exhaustive-deps
+      .catch(() => setAnalysisResult(null));
+    if (user) setAuth((a) => ({ ...a, open: false, notice: null }));
+  }, [user?.email, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // An invalid/expired verification link should land on the auth screen with the explanation.
+  useEffect(() => {
+    if (verifyOutcome && !verifyOutcome.ok) setAuth({ open: true, notice: verifyOutcome.message, mode: "login" });
+  }, [verifyOutcome]);
 
   if (loading) {
     return (
@@ -42,11 +70,25 @@ export default function App() {
     );
   }
 
-  if (!user) {
+  const openAuth = (notice: string | null = null, mode: "login" | "signup" = "login") => setAuth({ open: true, notice, mode });
+
+  if (!user && auth.open) {
     return (
       <>
         <PreviewBanner className="fixed top-0 inset-x-0 z-50" />
-        <AuthPage onLogin={login} onSignup={signup} />
+        <AuthPage
+          key={auth.notice ?? "auth"}
+          providers={providers}
+          onLogin={login}
+          onSignup={signup}
+          onGoogle={loginWithGoogle}
+          notice={auth.notice}
+          initialMode={auth.mode}
+          onBack={() => {
+            setAuth({ open: false, notice: null, mode: "login" });
+            dismissVerifyOutcome();
+          }}
+        />
       </>
     );
   }
@@ -57,7 +99,16 @@ export default function App() {
   };
 
   const handleNavigate = (page: Page) => {
+    if (!user && LOCKED_PAGES.has(page)) {
+      openAuth(LOCKED_NOTICE[page] ?? null);
+      return;
+    }
     setCurrentPage(page);
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setCurrentPage("home");
   };
 
   const handleOpenAnalysis = async (id: string) => {
@@ -68,18 +119,44 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50">
-      <Sidebar currentPage={currentPage} onNavigate={handleNavigate} user={user} onLogout={logout} />
+      <Sidebar
+        currentPage={currentPage}
+        onNavigate={handleNavigate}
+        user={user}
+        onLogout={handleLogout}
+        onSignIn={() => openAuth()}
+        lockedPages={LOCKED_PAGES}
+      />
       <main className="flex-1 overflow-y-auto">
         <PreviewBanner className="sticky top-0 z-40" />
+        {verifyOutcome?.ok && (
+          <div role="status" className="flex items-center gap-2 bg-emerald-50 text-emerald-800 text-sm px-6 py-3 border-b border-emerald-200">
+            <CheckCircle2 className="w-4 h-4" />
+            <span className="flex-1">{verifyOutcome.message}</span>
+            <button type="button" aria-label="Dismiss" onClick={dismissVerifyOutcome}>
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+        {user && !user.emailVerified && (
+          <div role="note" className="flex items-center gap-2 bg-amber-50 text-amber-900 text-sm px-6 py-3 border-b border-amber-200">
+            <AlertCircle className="w-4 h-4" />
+            Verify your new email address using the link we sent - you'll need it the next time you log in.
+          </div>
+        )}
         {currentPage === "home" && (
-          <HomePage onNavigate={handleNavigate} hasAnalysis={!!analysisResult} />
+          <HomePage onNavigate={handleNavigate} hasAnalysis={!!analysisResult} isGuest={!user} />
         )}
         {currentPage === "analysis" && (
-          <AnalysisPage onAnalysisComplete={handleAnalysisComplete} />
+          <AnalysisPage
+            onAnalysisComplete={handleAnalysisComplete}
+            isGuest={!user}
+            onLoginRequired={(message) => openAuth(message, "signup")}
+          />
         )}
         {currentPage === "results" &&
           (analysisResult ? (
-            <ResultsPage result={analysisResult} onNavigate={handleNavigate} />
+            <ResultsPage result={analysisResult} onNavigate={handleNavigate} isGuest={!user} onSignIn={() => openAuth(null, "signup")} />
           ) : (
             <div className="max-w-4xl mx-auto px-8 py-8">
               <Card className="bg-white border-slate-200 shadow-sm">
@@ -94,13 +171,13 @@ export default function App() {
               </Card>
             </div>
           ))}
-        {currentPage === "assistant" && (
+        {currentPage === "assistant" && user && (
           <AssistantPage analysisResult={analysisResult} />
         )}
         {currentPage === "roadmap" && (
           <RoadmapPage analysisResult={analysisResult} onNavigate={handleNavigate} />
         )}
-        {currentPage === "progress" && (
+        {currentPage === "progress" && user && (
           <ProgressPage
             onOpenAnalysis={handleOpenAnalysis}
             onDeleted={(id) => {
@@ -108,8 +185,16 @@ export default function App() {
             }}
           />
         )}
-        {currentPage === "settings" && (
-          <SettingsPage user={user} onLogout={logout} onUserUpdated={setUser} onAccountDeleted={clearUser} />
+        {currentPage === "settings" && user && (
+          <SettingsPage
+            user={user}
+            onLogout={handleLogout}
+            onUserUpdated={setUser}
+            onAccountDeleted={() => {
+              clearUser();
+              setCurrentPage("home");
+            }}
+          />
         )}
       </main>
     </div>

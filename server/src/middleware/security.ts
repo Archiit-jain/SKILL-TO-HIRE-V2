@@ -4,16 +4,21 @@ import helmet from "helmet";
 import { config } from "../config.js";
 import { HttpError } from "../http.js";
 
+// Google Identity Services (the "Sign in with Google" button) loads a script, a stylesheet and an iframe from
+// accounts.google.com and opens a popup, which needs COOP same-origin-allow-popups.
+const GIS = "https://accounts.google.com/gsi/";
+
 export const securityHeaders = helmet({
   contentSecurityPolicy: {
     useDefaults: true,
     directives: {
       "default-src": ["'self'"],
-      "script-src": ["'self'"],
+      "script-src": ["'self'", `${GIS}client`],
       // Radix ScrollArea injects a small <style> element; everything else is a same-origin stylesheet.
-      "style-src": ["'self'", "'unsafe-inline'"],
-      "img-src": ["'self'", "data:"],
-      "connect-src": ["'self'"],
+      "style-src": ["'self'", "'unsafe-inline'", `${GIS}style`],
+      "img-src": ["'self'", "data:", "https://lh3.googleusercontent.com"],
+      "connect-src": ["'self'", GIS],
+      "frame-src": [GIS],
       "object-src": ["'none'"],
       "frame-ancestors": ["'none'"],
       "base-uri": ["'self'"],
@@ -22,6 +27,7 @@ export const securityHeaders = helmet({
     },
   },
   crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
   hsts: config.isProd,
   referrerPolicy: { policy: "strict-origin-when-cross-origin" },
 });

@@ -5,6 +5,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { MulterError } from "multer";
 import { config, PROJECT_ROOT } from "./config.js";
 import type { Db } from "./db.js";
+import { defaultDeps, type AppDeps } from "./deps.js";
 import { HttpError } from "./http.js";
 import { apiLimiter, csrfProtection, securityHeaders } from "./middleware/security.js";
 import { accountRouter } from "./routes/account.js";
@@ -12,7 +13,8 @@ import { analysesRouter } from "./routes/analyses.js";
 import { assistantRouter } from "./routes/assistant.js";
 import { authRouter } from "./routes/auth.js";
 
-export function createApp(db: Db) {
+export function createApp(db: Db, overrides: Partial<AppDeps> = {}) {
+  const deps = defaultDeps(overrides);
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", config.trustProxy ? 1 : false);
@@ -31,8 +33,8 @@ export function createApp(db: Db) {
   api.get("/health", (_req, res) => {
     res.json({ status: "ok", assistant: config.gemini ? "gemini" : "rules", ephemeralStorage: config.onVercel });
   });
-  api.use("/auth", authRouter(db));
-  api.use("/account", accountRouter(db));
+  api.use("/auth", authRouter(db, deps));
+  api.use("/account", accountRouter(db, deps));
   api.use("/analyses", analysesRouter(db));
   api.use("/assistant", assistantRouter(db));
   api.use((_req, _res, next) => next(new HttpError(404, "Not found", "not_found")));

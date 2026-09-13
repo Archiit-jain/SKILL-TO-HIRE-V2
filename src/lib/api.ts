@@ -1,4 +1,4 @@
-import type { AnalysisResult, ChatMessage, ProgressEntry, User, UserSettings } from "@/types";
+import type { AnalysisResult, AuthProviders, ChatMessage, ProgressEntry, SignupResult, User, UserSettings } from "@/types";
 
 export class ApiError extends Error {
   constructor(
@@ -40,18 +40,29 @@ export const api = {
   me: () => request<{ user: User }>("/auth/me"),
   login: (email: string, password: string) => request<{ user: User }>("/auth/login", json("POST", { email, password })),
   signup: (name: string, email: string, password: string) =>
-    request<{ user: User }>("/auth/signup", json("POST", { name, email, password })),
+    request<SignupResult>("/auth/signup", json("POST", { name, email, password })),
+  providers: () => request<AuthProviders>("/auth/providers"),
+  google: (credential: string) => request<{ user: User }>("/auth/google", json("POST", { credential })),
+  verifyEmail: (token: string) => request<{ user: User }>("/auth/verify-email", json("POST", { token })),
+  resendVerification: (email: string) =>
+    request<{ message: string }>("/auth/resend-verification", json("POST", { email })),
   logout: () => request<void>("/auth/logout", json("POST")),
 
   getSettings: () => request<UserSettings>("/account/settings"),
   saveSettings: (s: UserSettings) => request<UserSettings>("/account/settings", json("PUT", s)),
   updateProfile: (name: string, email: string, currentPassword?: string) =>
-    request<{ user: User }>("/account", json("PATCH", { name, email, currentPassword: currentPassword || undefined })),
-  changePassword: (currentPassword: string, newPassword: string) =>
-    request<void>("/account/password", json("PUT", { currentPassword, newPassword })),
-  deleteAccount: (currentPassword: string) => request<void>("/account", json("DELETE", { currentPassword })),
+    request<{ user: User; verificationSent: boolean }>(
+      "/account",
+      json("PATCH", { name, email, currentPassword: currentPassword || undefined })
+    ),
+  /** currentPassword is omitted when a Google-only account sets its first password. */
+  changePassword: (newPassword: string, currentPassword?: string) =>
+    request<void>("/account/password", json("PUT", { currentPassword: currentPassword || undefined, newPassword })),
+  deleteAccount: (confirmation: { currentPassword: string } | { confirm: "DELETE" }) =>
+    request<void>("/account", json("DELETE", confirmation)),
 
-  analyze: (form: FormData) => request<{ result: AnalysisResult }>("/analyses", { method: "POST", body: form }),
+  analyze: (form: FormData) =>
+    request<{ result: AnalysisResult; guest?: boolean }>("/analyses", { method: "POST", body: form }),
   latestAnalysis: () => request<{ result: AnalysisResult | null }>("/analyses/latest"),
   history: () => request<{ analyses: ProgressEntry[] }>("/analyses"),
   getAnalysis: (id: string) => request<{ result: AnalysisResult }>(`/analyses/${encodeURIComponent(id)}`),

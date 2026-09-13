@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.0 — 2026-09-13 — Guest analysis, Google sign-in, email verification, Vercel
+
+### Added
+- **One free analysis without an account** (per browser); a second attempt opens the login screen. The guest result
+  is moved into the account on sign-in. Guests can use Home, New Analysis, Results and Roadmap; Assistant, Progress
+  and Settings are locked.
+- **Sign in with Google** (Google Identity Services popup; server verifies the ID token).
+- **Email verification**: sign-up sends a single-use link; login is blocked until verified; resend with cooldown;
+  email changes are re-verified.
+- **Fake-email blocking**: disposable/temp-mail domains and domains without a mail server are rejected.
+- Gmail SMTP mailer (dev prints links to the console), `GET /api/auth/providers`, DB migrations via `PRAGMA user_version`.
+- Google-only accounts can set a password and delete their account with a typed confirmation.
+- Vercel deployment: `api/index.ts`, `vercel.json`, preview banner, 4 MB upload limit on Vercel.
+- Tests: 38 → 54 (verification, disposable/DNS rejection, resend enumeration & cooldown, Google sign-in incl.
+  pre-registration takeover, guest limit & claim, source hygiene).
+
+### Fixed
+- Vercel function crashed on start (pdf.js needed `@napi-rs/canvas`, not traced by the bundler) and then couldn't
+  parse PDFs (worker file not bundled): canvas polyfill imported statically, embedded worker, PDF library loaded lazily.
+- Raw control characters in several regex literals replaced with `\uXXXX` escapes; a test now guards against it.
+- Empty values in `.env` (e.g. `JWT_SECRET=`) are treated as unset instead of failing validation.
+
+
 ## 1.0.0 — 2026-09-13 — Made runnable, backend added, security patched
 
 ### Added
