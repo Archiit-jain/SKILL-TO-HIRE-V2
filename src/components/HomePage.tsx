@@ -52,7 +52,7 @@ export function HomePage({ onNavigate, hasAnalysis, isGuest }: HomePageProps) {
               <Button
                 size="lg"
                 variant="outline"
-                className="border-slate-600 text-white hover:bg-slate-800"
+                className="border-slate-600 bg-transparent text-white hover:bg-slate-800 hover:text-white"
                 onClick={() => onNavigate("results")}
               >
                 View Latest Results
