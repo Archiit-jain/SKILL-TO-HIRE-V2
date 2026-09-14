@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — security remediation P0 (branch `security/remediation`)
+
+### Security
+- **DOCX guard** before mammoth: ZIP structure checks, 20 MB declared total, relationship-aware 4 MB XML caps, real
+  size + CRC-32 verification of every XML part, DTD/ENTITY rejection. Fixes the audit's C-1 (129 KB DOCX → 3.46 GB)
+  and H-1 (declared-size lie inflated to 400 MB before rejection).
+- **PDF pre-scan** before pdf.js: encrypted PDFs and unsupported/chained filters rejected; Flate streams counted in
+  64 KB chunks against 10 MB per stream / 30 MB total without trusting `/Length` or `endstream`. Fixes C-2 (285 KB PDF
+  with a 300 MB stream accepted, 1.15 GB).
+- **Parse slots**: at most 2 documents parsed at once per instance; otherwise `503 server_busy` + `Retry-After: 5`.
+- `HttpError` can carry response headers (used for `Retry-After`).
+- Tests: 55 → 117 (DOCX guard 25, PDF guard 31, upload safety API 6); the zip-bomb unit test now uses the new guard.
+
 ## 1.1.0 — 2026-09-13 — Guest analysis, Google sign-in, email verification, Vercel
 
 ### Added

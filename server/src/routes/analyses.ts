@@ -7,6 +7,7 @@ import { safeFilename } from "../analysis/redact.js";
 import type { AnalysisResult } from "../analysis/types.js";
 import { config } from "../config.js";
 import type { Db } from "../db.js";
+import type { AppDeps } from "../deps.js";
 import { handler, HttpError, parseBody } from "../http.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { analysisLimiter } from "../middleware/security.js";
@@ -34,7 +35,7 @@ const idParam = z.object({ id: z.uuid() });
 
 const LOGIN_REQUIRED = "You've used your free analysis. Log in or create an account to run more analyses.";
 
-export function analysesRouter(db: Db) {
+export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots">) {
   const router = Router();
   const auth = requireAuth(db);
   const guestHasAnalysis = db.prepare("SELECT 1 FROM guest_analyses WHERE guest_id = ? LIMIT 1");
@@ -84,27 +85,31 @@ export function analysesRouter(db: Db) {
       if (!resume) throw new HttpError(400, "Resume file is required", "validation");
 
       const resumeName = safeFilename(Buffer.from(resume.originalname, "latin1").toString("utf8"));
-      const resumeText = await extractText(resume.buffer, resumeName, ["pdf", "docx"]);
-      if (resumeText.length < config.text.minResumeChars) {
-        throw new HttpError(422, "Could not find enough text in the resume. Scanned/image-only PDFs are not supported.", "empty_text");
-      }
+      // D-5: extraction and analysis run inside a parse slot; when all slots are busy -> 503 server_busy + Retry-After.
+      // A refused request stores nothing, so a guest's free analysis is not used up.
+      const result = await deps.parseSlots.run(async () => {
+        const resumeText = await extractText(resume.buffer, resumeName, ["pdf", "docx"]);
+        if (resumeText.length < config.text.minResumeChars) {
+          throw new HttpError(422, "Could not find enough text in the resume. Scanned/image-only PDFs are not supported.", "empty_text");
+        }
 
-      let jdText = body.jdText?.trim() ?? "";
-      if (!jdText && jdFile) {
-        const jdName = safeFilename(Buffer.from(jdFile.originalname, "latin1").toString("utf8"));
-        jdText = await extractText(jdFile.buffer, jdName, ["pdf", "docx", "txt"]);
-      }
-      if (jdText.length < config.text.minJdChars) {
-        throw new HttpError(422, "Please provide a longer job description (paste it or upload a file).", "empty_text");
-      }
+        let jdText = body.jdText?.trim() ?? "";
+        if (!jdText && jdFile) {
+          const jdName = safeFilename(Buffer.from(jdFile.originalname, "latin1").toString("utf8"));
+          jdText = await extractText(jdFile.buffer, jdName, ["pdf", "docx", "txt"]);
+        }
+        if (jdText.length < config.text.minJdChars) {
+          throw new HttpError(422, "Please provide a longer job description (paste it or upload a file).", "empty_text");
+        }
 
-      const result = analyze({
-        resumeText,
-        jdText: jdText.slice(0, config.text.maxJdChars),
-        resumeName,
-        jdTitle: body.jdTitle,
-        // Guests always get privacy mode (redacted contact details, anonymised file name).
-        privacyMode: req.user ? !!req.user.privacy_mode : true,
+        return analyze({
+          resumeText,
+          jdText: jdText.slice(0, config.text.maxJdChars),
+          resumeName,
+          jdTitle: body.jdTitle,
+          // Guests always get privacy mode (redacted contact details, anonymised file name).
+          privacyMode: req.user ? !!req.user.privacy_mode : true,
+        });
       });
 
       if (!req.user) {

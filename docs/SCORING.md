@@ -10,8 +10,8 @@ same result. No machine-learning model is trained or downloaded.
 
 | Input | Parser | Limits |
 |---|---|---|
-| PDF | `pdf-parse` 2.4.5 (pdf.js 5.4.296, `isEvalSupported: false`) | First 20 pages |
-| DOCX | `mammoth` 1.12.3 raw text | ZIP pre-check: ≤ 2000 entries, ≤ 50 MB declared uncompressed |
+| PDF | `pdf-parse` 2.4.5 (pdf.js 5.4.296, `isEvalSupported: false`) | First 20 pages; pre-scan: no encryption, allowed filters only, Flate ≤ 10 MB per stream / 30 MB total (see `SECURITY.md`) |
+| DOCX | `mammoth` 1.12.3 raw text | Guard: ≤ 2,000 entries, ≤ 20 MB declared, XML parts ≤ 4 MB each and in total, real sizes + CRC verified (see `SECURITY.md`) |
 | TXT (JD only) | strict UTF-8 decode | No NUL bytes |
 
 The text is normalised (line endings, control characters, bullet glyphs, whitespace) and capped at 100,000 characters.

@@ -5,7 +5,9 @@ export class HttpError extends Error {
   constructor(
     public status: number,
     message: string,
-    public code = "error"
+    public code = "error",
+    /** Extra response headers, e.g. Retry-After on 503 server_busy. */
+    public headers?: Record<string, string>
   ) {
     super(message);
   }

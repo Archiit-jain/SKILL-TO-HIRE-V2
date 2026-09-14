@@ -35,7 +35,7 @@ export function createApp(db: Db, overrides: Partial<AppDeps> = {}) {
   });
   api.use("/auth", authRouter(db, deps));
   api.use("/account", accountRouter(db, deps));
-  api.use("/analyses", analysesRouter(db));
+  api.use("/analyses", analysesRouter(db, deps));
   api.use("/assistant", assistantRouter(db));
   api.use((_req, _res, next) => next(new HttpError(404, "Not found", "not_found")));
   app.use("/api", api);
@@ -50,6 +50,7 @@ export function createApp(db: Db, overrides: Partial<AppDeps> = {}) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof HttpError) {
+      if (err.headers) res.set(err.headers);
       return res.status(err.status).json({ error: { code: err.code, message: err.message } });
     }
     if (err instanceof MulterError) {

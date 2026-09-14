@@ -94,8 +94,19 @@ export const config = {
     // 5MB matches the original UI. Vercel functions reject request bodies over 4.5MB, so the preview uses 4MB.
     maxBytes: (ON_VERCEL ? 4 : 5) * 1024 * 1024,
     maxPdfPages: 20,
-    maxDocxUncompressedBytes: 50 * 1024 * 1024,
+    // Document safety caps (security remediation P0, owner decisions D-2 / D-3 / D-5). Checked before any parser runs.
+    // D-2: sum of all declared DOCX entry sizes.
+    maxDocxUncompressedBytes: 20 * 1024 * 1024,
+    // D-2: every part mammoth may read as XML (.xml/.rels and any relationship target), individually and in total.
+    maxDocxXmlPartBytes: 4 * 1024 * 1024,
+    maxDocxXmlTotalBytes: 4 * 1024 * 1024,
     maxZipEntries: 2000,
+    // D-3: decompressed size of one PDF Flate stream, and of all Flate streams in one PDF.
+    maxPdfStreamInflatedBytes: 10 * 1024 * 1024,
+    maxPdfTotalInflatedBytes: 30 * 1024 * 1024,
+    // D-5: documents parsed at the same time per server instance; extra requests get 503 with Retry-After.
+    maxConcurrentParses: 2,
+    busyRetryAfterSeconds: 5,
     maxExtractedChars: 100_000,
   },
   googleClientId: env.GOOGLE_CLIENT_ID ?? null,

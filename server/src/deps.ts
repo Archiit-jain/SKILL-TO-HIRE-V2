@@ -1,3 +1,4 @@
+import { ParseSlots } from "./analysis/parse-slots.js";
 import { config } from "./config.js";
 import { createMailer, type Mailer } from "./email/mailer.js";
 import { defaultEmailChecker, type EmailChecker } from "./security/email-check.js";
@@ -10,6 +11,8 @@ export interface AppDeps {
   verifyGoogle: GoogleVerifier;
   /** OAuth client ID for Google sign-in; null disables it. */
   googleClientId: string | null;
+  /** Concurrent document parses allowed on this instance (D-5). */
+  parseSlots: ParseSlots;
 }
 
 export function defaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
@@ -18,5 +21,6 @@ export function defaultDeps(overrides: Partial<AppDeps> = {}): AppDeps {
     checkEmail: overrides.checkEmail ?? defaultEmailChecker,
     verifyGoogle: overrides.verifyGoogle ?? defaultGoogleVerifier,
     googleClientId: overrides.googleClientId !== undefined ? overrides.googleClientId : config.googleClientId,
+    parseSlots: overrides.parseSlots ?? new ParseSlots(),
   };
 }

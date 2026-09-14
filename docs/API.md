@@ -17,11 +17,11 @@ Base path: `/api`. All responses are JSON and carry `Cache-Control: no-store`.
 | 409 | `email_taken`, `email_unverified_exists` | Email already registered (verified / waiting for verification) |
 | 413 | `upload` | File larger than the upload limit (5 MB locally, 4 MB on Vercel) |
 | 415 | `file_type` | Extension not allowed, or content doesn't match extension |
-| 422 | `file_corrupt`, `file_too_complex`, `empty_text`, `disposable_email`, `email_domain_invalid` | Unreadable file, zip bomb, too little text; temporary-mail provider; domain can't receive email |
+| 422 | `file_corrupt`, `file_too_complex`, `empty_text`, `disposable_email`, `email_domain_invalid` | Unreadable file; document over a safety limit (`"This document is too large or complex to process safely."`) or an encrypted PDF (`"Encrypted or password-protected PDFs aren't supported. Please upload an unprotected PDF."`); too little text; temporary-mail provider; domain can't receive email |
 | 429 | `rate_limited` | Rate limit exceeded |
 | 500 | `internal` | Unexpected error (details only in the server log) |
 | 502 | `email_send_failed` | Account created but the verification email couldn't be sent |
-| 503 | `email_unavailable`, `google_unavailable` | Email delivery / Google sign-in not configured on this server |
+| 503 | `email_unavailable`, `google_unavailable`, `server_busy` | Email delivery / Google sign-in not configured on this server; all document parse slots on this instance are busy (response carries `Retry-After: 5`) |
 
 ---
 
@@ -100,6 +100,15 @@ in. A guest's second request → `401 login_required` (checked before the upload
 | `jdTitle` | text | no | ≤ 120 chars; guessed from the JD if empty |
 
 → `201 {"result": AnalysisResult}` (guests: `{"result", "guest": true}`)
+
+Upload safety errors (security remediation P0; limits in `config.upload`):
+
+| Status | Code | When |
+|---|---|---|
+| 422 | `file_too_complex` | DOCX: > 2,000 entries, > 20 MB declared, an XML part > 4 MB or all XML > 4 MB, a size lie, ZIP64/split/encrypted/unsupported compression/duplicate names, DTD in XML. PDF: a Flate stream inflating > 10 MB or all streams > 30 MB, a rejected filter. Generic message, never says which check failed |
+| 422 | `file_too_complex` | Encrypted PDF (specific message, see above) |
+| 422 | `file_corrupt` | Malformed archive or PDF |
+| 503 | `server_busy` | Two documents are already being parsed on this instance; retry after `Retry-After` seconds. Nothing is stored and a guest's free analysis is not used up |
 
 ```jsonc
 {

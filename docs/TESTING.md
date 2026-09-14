@@ -10,7 +10,7 @@ Runner: Node's built-in `node:test` via `tsx`, HTTP tests via `supertest`, in-me
 (`NODE_ENV=test`). Fixtures in `server/tests/fixtures.ts` are **synthetic** (not real people) and include a
 generator for a minimal valid PDF.
 
-**Result on 2026-09-13 (v1.1): 54 tests, 13 suites, 54 passed, 0 failed.**
+**Result on 2026-09-14 (security remediation P0): 117 tests, 23 suites, 117 passed, 0 failed.**
 
 | Suite | Tests | Covers |
 |---|---|---|
@@ -19,7 +19,7 @@ generator for a minimal valid PDF.
 | requirement extraction | 1 | Required vs preferred classification |
 | analyze() | 5 | Strong/partial/missing, weighted score maths, determinism, privacy redaction, skipped components |
 | assistant (rules mode) | 3 | Skill explanation, gap prioritisation, no-analysis response |
-| file handling | 4 | PDF extraction, signature mismatch, zip bomb, filename/PII sanitising |
+| file handling | 4 | PDF extraction, signature mismatch, zip bomb (declared archive total over 20 MB), filename/PII sanitising |
 | source hygiene | 1 | No raw control characters in source files |
 | auth: sign-up and email verification | 9 | No session before verification, link uses APP_ORIGIN, login blocked until verified, single-use & expiring tokens, disposable and no-MX domains rejected, resend doesn't reveal accounts, resend cooldown, sign-up disabled without mail delivery |
 | auth: login and session security | 4 | Generic login errors, CSRF header/origin, forged tokens, security headers incl. Google CSP/COOP |
@@ -27,6 +27,9 @@ generator for a minimal valid PDF.
 | account | 3 | Password change revokes other sessions; email change needs password, blocks disposable, requires re-verification; settings & deletion |
 | guest analysis | 3 | Exactly one analysis per browser, locked routes, guest result claimed on sign-up and free use stays consumed after logout |
 | analyses (signed in) | 7 | PDF + pasted JD, TXT JD, spoofed/oversize/missing input, history, cross-user isolation, assistant, delete |
+| DOCX guard (`docx-guard.test.ts`, 4 suites) | 25 | Approved caps; valid DOCX still extracts; XML part/total/archive/entry caps incl. exact-cap acceptance; the audit's C-1 shape rejected before mammoth; size lies (H-1), CRC and stored-size mismatches; ZIP64, split, encrypted, bzip2/lzma, duplicate names, Unicode Path field; relationship-aware XML caps (renamed, absolute and image-typed targets); DOCTYPE/ENTITY in UTF-8/UTF-16LE/BE; malformed archives → `file_corrupt` |
+| PDF guard (`pdf-guard.test.ts`, 5 suites) | 31 | Approved caps; normal and Flate PDFs still extract; exact-cap acceptance; image codecs; inline images (R-3); per-stream and total caps; the audit's C-2 shape rejected before pdf.js; fake `endstream`, short/indirect `/Length`, escaped names; encrypted PDFs incl. escaped `/Encrypt`; every rejected filter; corrupt Flate; malformed PDFs; linear time on hostile token soup |
+| upload safety (P0) (`api.test.ts`) | 6 | Approved SEC-D5 values; 503 `server_busy` + `Retry-After: 5` without using a guest's free analysis; slot released after rejections; DOCX and PDF bombs rejected for guests, users and as JD files with nothing stored; encrypted PDF message |
 
 Other checks run:
 
@@ -64,6 +67,7 @@ On Vercel (production URL): health check OK, sign-up + PDF analysis OK (before t
 
 ## Not yet tested
 
-- DOCX upload through the browser (DOCX parsing is covered only by the zip-bomb precheck unit test, since no DOCX fixture exists).
+- DOCX upload through the browser (DOCX parsing is covered by synthetic DOCX fixtures in `docx-guard.test.ts`).
+- Peak memory and parse behaviour on Vercel itself (P0 measurements were taken locally, see `SECURITY.md`).
 - Gemini mode (requires your API key and model choice).
 - Accuracy against real resumes/JDs, and cross-browser/mobile layout.

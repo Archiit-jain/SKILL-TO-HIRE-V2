@@ -49,9 +49,29 @@ chars without `<>` or control characters. All SQL uses prepared statements with 
 ### File upload hardening
 - Memory storage only; nothing is written to disk.
 - Extension allow-list + signature check (`%PDF-`, ZIP `PK\x03\x04`, TXT must not contain NUL and must be valid UTF-8).
-- DOCX: the ZIP central directory is parsed **before** decompression; archives declaring > 50 MB uncompressed or
-  > 2000 entries, or using ZIP64, are rejected.
-- PDF: pdf.js 5.4.296 (includes the fix for CVE-2024-4367), `isEvalSupported: false`, first 20 pages only.
+- DOCX guard (`analysis/docx-guard.ts`, security remediation P0), run **before** mammoth/JSZip decompress anything:
+  - ZIP structure: single end-of-central-directory record, no ZIP64, no split archives, central directory exactly where
+    the record says, ≤ 2,000 entries, stored/deflate only, no encrypted entries, no duplicate names, no Info-ZIP
+    Unicode Path fields, local headers that match the central directory → otherwise `422 file_too_complex` /
+    `422 file_corrupt`.
+  - Declared sizes: all entries ≤ 20 MB; every part mammoth may read as XML ≤ 4 MB each and ≤ 4 MB together. "XML
+    part" means `.xml`/`.rels` names **plus every relationship target** (except image relationships to image files),
+    so a text part can't escape the cap by being renamed (e.g. `word/main.dat`).
+  - Size lies: each XML part is really inflated with an output cap of its declared size + 1 byte; its real length and
+    CRC-32 must match. (Before P0, a 381 KB file declaring 1 KB was fully inflated to 400 MB by JSZip.)
+  - Any XML part with `<!DOCTYPE` or `<!ENTITY` (UTF-8 or UTF-16) is rejected.
+- PDF pre-scan (`analysis/pdf-guard.ts`), run **before** pdf.js is loaded (pdf.js has no inflate limit of its own):
+  - Encrypted PDFs (any `/Encrypt` entry, including escaped names) → `422 file_too_complex` "Encrypted or
+    password-protected PDFs aren't supported. Please upload an unprotected PDF."
+  - Allowed stream filters: none, a single `FlateDecode`, or a single image codec that text extraction doesn't expand
+    (DCT, JPX, CCITTFax, JBIG2). LZW, RunLength, ASCII85, ASCIIHex, Crypt, unknown filters, filter chains and
+    indirect `/Filter` values are rejected.
+  - Every Flate stream is inflated in 64 KB chunks, counting and discarding the output, until the deflate stream really
+    ends. `/Length` and `endstream` are not trusted. One stream > 10 MB or all streams > 30 MB → rejected.
+  - pdf.js 5.4.296 (includes the fix for CVE-2024-4367), `isEvalSupported: false`, first 20 pages only.
+- Parse slots (`analysis/parse-slots.ts`): at most 2 documents are parsed at the same time per server instance; extra
+  uploads get `503 server_busy` with `Retry-After: 5` and nothing is stored (a guest's free analysis isn't used up).
+- These are structural and resource checks, **not** antivirus or malware scanning.
 - Client filenames are stripped of path components and control/reserved characters, and anonymised in privacy mode.
 - Parse errors return a generic 422 message and never echo parser internals.
 
@@ -104,6 +124,49 @@ CSRF header and foreign-origin rejection, forged `alg:none` token rejection, sec
 revoking other sessions, password required for email change and deletion, auth required for uploads, spoofed file
 (415), oversize file (413), cross-user read/delete/assistant access (404), UUID validation.
 `server/tests/analysis.test.ts` checks zip-bomb rejection, content/extension mismatch, filename sanitising and PII redaction.
+`server/tests/docx-guard.test.ts` (25 tests) and `server/tests/pdf-guard.test.ts` (31 tests) cover every DOCX and PDF
+guard rule with synthetic, hand-built archives and PDFs; the "upload safety (P0)" suite in `api.test.ts` sends DOCX
+and PDF bombs and an encrypted PDF through the real endpoint and checks the busy response and slot release.
+
+### Security remediation P0 measurements (2026-09-14, local Windows, Node 24 via `tsx`)
+
+**Audit probes** (`extractText()` called directly, each in a fresh process):
+
+| Case | Result | Time | Peak memory |
+|---|---|---|---|
+| 129 KB DOCX with 45 MB of XML (was 3.46 GB, 15.5 s) | Rejected 422 | 0 ms | 71 MB |
+| 381 KB DOCX lying about a 400 MB part (was 470 MB) | Rejected 422 | 3 ms | 71 MB |
+| 285 KB PDF with a 300 MB Flate stream (was accepted, 1.15 GB) | Rejected 422 | 19 ms | 83 MB |
+
+**Concurrent parsing through the real route.** An earlier run reported **852 MB** for two cap-sized documents at once.
+That figure came from a shortcut harness that called `extractText()` directly (no Express, multer, parse slots or
+`analyze()`) with Node's default heap limit. **It is not the final measurement.** The corrected measurement:
+
+- Fixtures (a 4 MB dense-paragraph DOCX at the XML cap; a PDF with 3 × 10 MB Flate text streams at the caps) were
+  generated once in a separate process and read from disk.
+- One process created the real app and sent real `POST /api/analyses` uploads through supertest: Express → multer →
+  parse slots → DOCX/PDF guard → mammoth/pdf.js → `analyze()`. A wrapper confirmed both parse slots were in use at once;
+  all uploads returned 201.
+- A separate thread sampled process RSS every 10 ms (agreed with the OS peak within 9 MB).
+- Each case ran with Node's default heap limit (4.3 GB on the test machine) and with the heap capped to 960 MB and
+  704 MB, as on a ~1 GB machine. With a large heap allowance V8 frees memory late, which inflates RSS.
+
+| Peak RSS (MB) | Default heap (4.3 GB) | Heap cap 960 MB | Heap cap 704 MB |
+|---|---|---|---|
+| Baseline, app loaded (includes ~38 MB `tsx` overhead) | 147–163 | 136–138 | 135–144 |
+| Tiny PDF (pdf.js fixed cost on its first document) | 650 | 578 | 579 |
+| DOCX at the XML cap alone | 759 | 681 | 618 |
+| PDF at the caps alone (12–14 s) | 785 | 716 | 711 |
+| **DOCX + PDF at once** | 1,182–1,194 | **862** | 761 |
+| PDF + PDF at once (26–28 s) | 907 | 838 | 709 |
+
+No run ran out of memory. **Corrected worst case: ~862 MB** (960 MB heap cap, DOCX + PDF at once), leaving a margin
+of **~162 MB (~16%)** against the 1024 MB Vercel function limit (~200 MB without the `tsx` overhead, which Vercel
+doesn't have). The exact heap limit and runtime overhead of Vercel's Node were **not** verified locally; check real
+peak memory on the Vercel preview. This is not a P0 memory blocker, and no limit or parse-slot count was changed.
+
+**Timing:** two capped PDFs parsed at once took **26–28 s** locally, close to Vercel's 30 s function timeout. This is
+a P2 concern (worker-thread timeout, D-11), not a P0 memory blocker.
 
 ## 4. Known limitations / residual risk
 
@@ -113,7 +176,11 @@ revoking other sessions, password required for email change and deletion, auth r
 | No account lockout / CAPTCHA | IP rate limiting only; per-account throttling could be added |
 | No MFA | Out of scope for this micro project |
 | In-memory rate-limit store | Resets on restart and isn't shared across instances; use a Redis store if scaled horizontally |
-| PDF parsing runs on the main event loop | A very complex PDF can block other requests briefly; move to a worker thread for multi-user deployment |
+| PDF/DOCX parsing runs on the main event loop | Size caps and the 2-slot limit bound memory, but a cap-sized document still blocks other requests on that instance for several seconds. A worker-thread timeout is planned for P2 after a Vercel bundling check |
+| Peak memory near the Vercel function size | Measured locally through the real route: two cap-sized parses at once peaked at ~862 MB with a 960 MB heap cap (~162 MB / ~16% margin to Vercel's 1024 MB). The earlier 852 MB shortcut-harness figure is superseded. pdf.js alone peaks at ~578 MB on its first document, before any P0 change. Caps were **not** changed; Vercel's heap limit and runtime overhead weren't verified, so revalidate on the Vercel preview |
+| Slow concurrent PDF parsing | Two capped PDFs at once took 26–28 s locally, close to Vercel's 30 s function timeout. P2 concern (worker-thread timeout), not a P0 memory blocker |
+| Legitimate PDFs refused by the SEC-D3 policy | Encrypted/owner-password PDFs, LZW/RunLength/ASCII filters, filter chains such as `[/FlateDecode /DCTDecode]`, and Flate images larger than 10 MB decompressed are rejected with a clear 422 |
+| Inline images inside content streams | Not visible to the pre-scan; measured that pdf.js text extraction does not decode them (a 196 MB inline image left peak memory unchanged). A regression test keeps this covered |
 | `style-src 'unsafe-inline'` | Needed by Radix ScrollArea; low risk because `script-src` is strict |
 | SQLite file is not encrypted at rest | Use disk encryption on the host; passwords are hashed regardless |
 | Signup reveals whether an email is registered | Accepted trade-off (see above) |

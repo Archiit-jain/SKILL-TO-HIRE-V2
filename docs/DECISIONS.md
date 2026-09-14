@@ -22,7 +22,7 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | D-09 | Requirement weights required 1.0 / preferred 0.5; credit strong 1 / partial 0.5 / missing 0 | Other ratios; per-skill frequency weighting | `REQUIREMENT_WEIGHT`, `LEVEL_CREDIT` |
 | D-10 | Strong = mentioned in Experience/Projects (or action-verb line); Partial = mentioned elsewhere | Require N mentions; semantic embedding threshold | `analyze.ts` |
 | D-11 | Education is binary (meets / doesn't meet) | Partial credit for one level below | `analyze.ts` |
-| D-13 | Upload/parse limits: 5 MB (from original UI), 20 PDF pages, 50 MB DOCX uncompressed, 2000 ZIP entries, 100k extracted chars, JD 50k chars, question 1k chars, min 50 chars text | Other values | `config.ts` |
+| D-13 | Upload/parse limits: 5 MB (from original UI), 20 PDF pages, ~~50 MB~~ **20 MB** DOCX uncompressed (changed by SEC-D2), 2000 ZIP entries, 100k extracted chars, JD 50k chars, question 1k chars, min 50 chars text | Other values | `config.ts` |
 | D-14 | Rate limits: api 300/15 min, auth 10/15 min, analysis 30/h, assistant 60/h | Other values; per-account limits | `middleware/security.ts` |
 | D-15 | scrypt N=2^17, r=8, p=1 | Argon2id (needs native package), bcrypt | `security/password.ts` |
 | D-16 | Password policy: 8–128 chars (8 from the original UI), no composition rules | Breached-password check, stronger minimum | `routes/auth.ts` |
@@ -76,3 +76,15 @@ These were needed to make the app work. Each has alternatives; confirm or change
 |---|---|---|
 | D-30 | Teammate preview hosted on Vercel team `sillyguysolutions`, deployed from GitHub repo `Archiit-jain/SKILL-TO-HIRE-V2` (auto-deploy on push) | Chosen by user |
 | D-31 | On Vercel the upload limit is 4 MB (platform body limit 4.5 MB), versus 5 MB locally | PENDING APPROVAL (forced by platform) |
+
+## Security remediation decisions (approved by the owner, 2026-09-14)
+
+Branch `security/remediation`. IDs are prefixed `SEC-` so they don't clash with the D-numbers above.
+
+| ID | Decision | Priority | Where |
+|---|---|---|---|
+| SEC-D1 | V2 stays **preview-only** on Vercel with the per-instance `/tmp` SQLite; no hosted database yet (documentation in P1) | P1 | docs |
+| SEC-D2 | DOCX caps: 20 MB declared archive total, 4 MB per XML/rels part, 4 MB all XML/rels, 2,000 entries (PROVISIONAL; peak memory measured and reported, see `SECURITY.md`) | P0 | `config.upload`, `analysis/docx-guard.ts` |
+| SEC-D3 | PDF caps: Flate 10 MB per stream, 30 MB per document; reject encrypted PDFs, LZW, RunLength, ASCII85/ASCIIHex, unsupported and chained filters → `422 file_too_complex` | P0 | `config.upload`, `analysis/pdf-guard.ts` |
+| SEC-D5 | At most 2 simultaneous document parses per instance → `503 server_busy`, `Retry-After: 5` (password-hash slots follow in P1) | P0 | `config.upload`, `analysis/parse-slots.ts` |
+| SEC-R5 | Encrypted PDFs get the specific message "Encrypted or password-protected PDFs aren't supported. Please upload an unprotected PDF." | P0 | `analysis/pdf-guard.ts` |

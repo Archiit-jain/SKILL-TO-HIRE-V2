@@ -1,6 +1,8 @@
 import mammoth from "mammoth";
 import { config } from "../config.js";
 import { HttpError } from "../http.js";
+import { checkDocx } from "./docx-guard.js";
+import { checkPdf } from "./pdf-guard.js";
 
 export type DocKind = "pdf" | "docx" | "txt";
 
@@ -23,37 +25,6 @@ export function detectKind(buffer: Buffer, filename: string, allowed: DocKind[])
   return claimed;
 }
 
-/** Reject zip bombs before mammoth inflates anything: sum declared uncompressed sizes from the central directory. */
-export function assertSafeZip(buf: Buffer) {
-  const minEocd = 22;
-  const searchStart = Math.max(0, buf.length - (minEocd + 0xffff));
-  let eocd = -1;
-  for (let i = buf.length - minEocd; i >= searchStart; i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) throw new HttpError(422, "Corrupt DOCX file", "file_corrupt");
-  const entries = buf.readUInt16LE(eocd + 10);
-  const cdOffset = buf.readUInt32LE(eocd + 16);
-  if (entries === 0xffff || cdOffset === 0xffffffff) throw new HttpError(422, "ZIP64 DOCX files are not supported", "file_corrupt");
-  if (entries > config.upload.maxZipEntries) throw new HttpError(422, "DOCX has too many parts", "file_too_complex");
-
-  let pos = cdOffset;
-  let total = 0;
-  for (let n = 0; n < entries; n++) {
-    if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) {
-      throw new HttpError(422, "Corrupt DOCX file", "file_corrupt");
-    }
-    total += buf.readUInt32LE(pos + 24);
-    if (total > config.upload.maxDocxUncompressedBytes) {
-      throw new HttpError(422, "DOCX expands to an unsafe size", "file_too_complex");
-    }
-    pos += 46 + buf.readUInt16LE(pos + 28) + buf.readUInt16LE(pos + 30) + buf.readUInt16LE(pos + 32);
-  }
-}
-
 export function normalizeText(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")
@@ -70,6 +41,7 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
   let raw: string;
   try {
     if (kind === "pdf") {
+      await checkPdf(buffer); // encryption, filter policy and inflated-size caps (before pdf.js is even loaded)
       // Loaded lazily so a PDF-library problem can only break PDF parsing, never the whole API.
       await import("./pdf-polyfill.js");
       const { PDFParse } = await import("pdf-parse");
@@ -84,7 +56,7 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
         await parser.destroy();
       }
     } else if (kind === "docx") {
-      assertSafeZip(buffer);
+      checkDocx(buffer); // structure, declared + real sizes, relationship-aware XML caps, DTD (before mammoth)
       raw = (await mammoth.extractRawText({ buffer })).value;
     } else {
       raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
