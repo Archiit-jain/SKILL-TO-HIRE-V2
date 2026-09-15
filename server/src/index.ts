@@ -3,7 +3,7 @@ import { createApp } from "./app.js";
 import { config } from "./config.js";
 import { openDb } from "./db.js";
 
-const db = openDb();
+const db = await openDb();
 const app = createApp(db);
 
 const server = app.listen(config.port, config.host, () => {

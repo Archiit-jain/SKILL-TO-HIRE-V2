@@ -31,7 +31,7 @@ export function assistantRouter(db: Db, deps: AppDeps) {
         }),
         req.body
       );
-      const result = loadAnalysis(db, req.user!.id, body.analysisId);
+      const result = await loadAnalysis(db, req.user!.id, body.analysisId);
       if (body.analysisId && !result) throw new HttpError(404, "Analysis not found", "not_found");
       res.json(
         await answer(body.question, result, { db, userId: req.user!.id, gemini: deps.gemini, quota: deps.geminiQuota, now: deps.now() })

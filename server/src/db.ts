@@ -1,12 +1,44 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { createClient, type Client, type InArgs, type InValue, type Transaction } from "@libsql/client";
 import { config } from "./config.js";
 
-export type Db = DatabaseSync;
+/**
+ * Database access (hackathon release: persistent storage).
+ *
+ * One code path for every environment, through @libsql/client:
+ *  - production/preview on Vercel: a hosted libSQL database (Turso) from TURSO_DATABASE_URL + TURSO_AUTH_TOKEN, which
+ *    persists across serverless instances and deployments;
+ *  - local development: a SQLite file (server/data/skill2hire.db by default);
+ *  - tests: a private in-memory database per app (migration tests also use temporary files).
+ * Without TURSO_DATABASE_URL on Vercel the app still starts on /tmp storage, which is NOT persistent; `db.persistent` is
+ * then false and the frontend banner says so (`persistentStorage` in GET /api/auth/providers).
+ *
+ * Operations on one Db are serialised in-process: libSQL's local driver can't run overlapping transactions on one
+ * connection, and serialising keeps multi-statement checks (guest free use, quotas) atomic within an instance.
+ * Transactions (`db.transaction`) provide atomicity across instances on the hosted database.
+ */
+
+export type Row = Record<string, unknown>;
+
+export interface Queryable {
+  get<T = Row>(sql: string, ...args: InValue[]): Promise<T | undefined>;
+  all<T = Row>(sql: string, ...args: InValue[]): Promise<T[]>;
+  run(sql: string, ...args: InValue[]): Promise<{ changes: number }>;
+}
+
+export interface Db extends Queryable {
+  /** Runs several statements separated by semicolons (schema scripts). */
+  exec(sql: string): Promise<void>;
+  /** Runs `fn` in one write transaction; rolls back if it throws. */
+  transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
+  /** False for in-memory databases and for the Vercel /tmp fallback, whose data is lost when the instance is recycled. */
+  readonly persistent: boolean;
+  close(): void;
+}
 
 /**
- * Ordered migrations. PRAGMA user_version records how many have run, so each runs exactly once per database.
+ * Ordered migrations. `schema_version` records how many have run, so each runs exactly once per database.
  * Never edit a released migration; append a new one.
  */
 const MIGRATIONS: string[] = [
@@ -109,33 +141,152 @@ const MIGRATIONS: string[] = [
 /** Exported for migration tests only. */
 export const MIGRATION_COUNT = MIGRATIONS.length;
 
-/** Applies migrations 1..`upTo` to a raw database (tests use this to build an older schema version). */
-export function migrateTo(db: Db, upTo: number) {
-  migrate(db, upTo);
+type Executor = Client | Transaction;
+
+const toPlain = (columns: string[], row: ArrayLike<unknown>): Row =>
+  Object.fromEntries(columns.map((c, i) => [c, row[i]]));
+
+function queryable(exec: () => Executor): Queryable {
+  const run = async (sql: string, args: InValue[]) => exec().execute({ sql, args: args as InArgs });
+  return {
+    async get<T>(sql: string, ...args: InValue[]) {
+      const r = await run(sql, args);
+      return (r.rows[0] ? toPlain(r.columns, r.rows[0]) : undefined) as T | undefined;
+    },
+    async all<T>(sql: string, ...args: InValue[]) {
+      const r = await run(sql, args);
+      return r.rows.map((row) => toPlain(r.columns, row)) as T[];
+    },
+    async run(sql: string, ...args: InValue[]) {
+      const r = await run(sql, args);
+      return { changes: r.rowsAffected };
+    },
+  };
 }
 
-function migrate(db: Db, upTo = MIGRATIONS.length) {
-  const current = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  for (let i = current; i < upTo; i++) {
-    db.exec("BEGIN");
-    try {
-      db.exec(MIGRATIONS[i]);
-      db.exec(`PRAGMA user_version = ${i + 1}`);
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      throw err;
-    }
+class LibsqlDb implements Db {
+  private tail: Promise<unknown> = Promise.resolve();
+  private readonly direct: Queryable;
+
+  constructor(
+    private readonly client: Client,
+    readonly persistent: boolean
+  ) {
+    this.direct = queryable(() => this.client);
+  }
+
+  /** Queues `fn` behind every earlier operation on this Db. */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(fn, fn);
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
+
+  get<T = Row>(sql: string, ...args: InValue[]) {
+    return this.serial(() => this.direct.get<T>(sql, ...args));
+  }
+
+  all<T = Row>(sql: string, ...args: InValue[]) {
+    return this.serial(() => this.direct.all<T>(sql, ...args));
+  }
+
+  run(sql: string, ...args: InValue[]) {
+    return this.serial(() => this.direct.run(sql, ...args));
+  }
+
+  exec(sql: string) {
+    return this.serial(() => this.client.executeMultiple(sql));
+  }
+
+  transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T> {
+    return this.serial(async () => {
+      const tx = await this.client.transaction("write");
+      try {
+        const result = await fn(queryable(() => tx));
+        await tx.commit();
+        return result;
+      } catch (err) {
+        await tx.rollback().catch(() => undefined);
+        throw err;
+      } finally {
+        tx.close();
+      }
+    });
+  }
+
+  close() {
+    this.client.close();
   }
 }
 
-export function openDb(file = config.databasePath): Db {
-  if (file !== ":memory:") mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
-  db.exec("PRAGMA foreign_keys = ON;");
-  if (file !== ":memory:") db.exec("PRAGMA journal_mode = WAL;");
+/** Current schema version. `schema_version` replaces PRAGMA user_version (not every hosted libSQL server allows it);
+ * a local database created before this release is seeded from its user_version so no migration runs twice. */
+async function currentVersion(db: Db): Promise<number> {
+  await db.exec("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)");
+  const row = await db.get<{ version: number }>("SELECT version FROM schema_version LIMIT 1");
+  if (row) return Number(row.version);
+  let legacy = 0;
   try {
-    migrate(db);
+    legacy = Number((await db.get<{ user_version: number }>("PRAGMA user_version"))?.user_version ?? 0);
+  } catch {
+    legacy = 0;
+  }
+  await db.run("INSERT INTO schema_version (version) VALUES (?)", legacy);
+  return legacy;
+}
+
+/** Applies migrations after the current version up to `upTo`, each in its own transaction. */
+export async function migrateTo(db: Db, upTo = MIGRATIONS.length) {
+  const current = await currentVersion(db);
+  for (let i = current; i < upTo; i++) {
+    await db.transaction(async (tx) => {
+      for (const statement of splitStatements(MIGRATIONS[i])) await tx.run(statement);
+      await tx.run("UPDATE schema_version SET version = ?", i + 1);
+    });
+  }
+}
+
+/** Splits a migration script into statements (the scripts contain no semicolons inside strings or triggers). */
+export function splitStatements(script: string): string[] {
+  return script
+    .split("\n")
+    .map((line) => line.replace(/--.*$/, ""))
+    .join("\n")
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+export interface OpenDbOptions {
+  /** libsql://…, file:…, or a plain file path. */
+  url?: string;
+  authToken?: string;
+  /** Apply migrations up to this version (tests); default: all. */
+  migrateUpTo?: number;
+  /** Data is lost when the instance is recycled; default: the configured database's setting. */
+  ephemeral?: boolean;
+}
+
+/** Opens (and migrates) the application database. */
+export async function openDb(options: OpenDbOptions = {}): Promise<Db> {
+  const url = options.url ?? config.database.url;
+  const authToken = options.authToken ?? config.database.authToken;
+  const remote = /^(libsql|https?|wss?):/i.test(url);
+  let clientUrl = url;
+  if (!remote && url !== ":memory:") {
+    const file = url.replace(/^file:/i, "");
+    mkdirSync(path.dirname(file), { recursive: true });
+    clientUrl = `file:${file}`;
+  }
+  const client = createClient({ url: clientUrl, authToken: remote ? authToken : undefined, intMode: "number" });
+  const ephemeral = options.ephemeral ?? (options.url === undefined && config.database.ephemeral);
+  const db = new LibsqlDb(client, url !== ":memory:" && !ephemeral);
+  try {
+    if (!remote) {
+      await db.exec("PRAGMA foreign_keys = ON");
+      if (url !== ":memory:") await db.exec("PRAGMA journal_mode = WAL");
+    }
+    await migrateTo(db, options.migrateUpTo);
   } catch (err) {
     db.close(); // the failed migration was rolled back; don't leave the file handle open
     throw err;

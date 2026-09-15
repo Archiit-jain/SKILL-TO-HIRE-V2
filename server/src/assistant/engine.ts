@@ -147,7 +147,7 @@ export async function answer(question: string, result: AnalysisResult | null, ct
   const base = answerFromAnalysis(question, result);
   if (!ctx.gemini || !result) return base;
 
-  const quota = reserveGeminiAnswer(ctx.db, ctx.userId, ctx.quota, ctx.now);
+  const quota = await reserveGeminiAnswer(ctx.db, ctx.userId, ctx.quota, ctx.now);
   if (!quota.admitted) {
     console.info(`[assistant] rules answer used: ${quota.reason}`);
     return base;

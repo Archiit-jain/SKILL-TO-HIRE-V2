@@ -13,6 +13,8 @@ export interface AuthProviders {
   googleClientId: string | null;
   /** false when the server can't send verification emails, so email sign-up is disabled. */
   emailSignup: boolean;
+  /** false when the server stores data somewhere that can reset (e.g. Vercel /tmp without a hosted database). */
+  persistentStorage?: boolean;
 }
 
 export interface SignupResult {

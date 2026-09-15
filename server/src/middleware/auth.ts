@@ -36,13 +36,13 @@ declare global {
  * present), the user exists, the token version matches, and a non-expired session row with that jti belongs to the
  * same user. Logout deletes the row, so a copied token stops working immediately.
  */
-function sessionUser(db: Db, req: Request, res: Response): { user: UserRow; sessionId: string } | null {
+async function sessionUser(db: Db, req: Request, res: Response): Promise<{ user: UserRow; sessionId: string } | null> {
   const token = req.cookies?.[SESSION_COOKIE];
   if (typeof token !== "string") return null;
   const claims = verifySession(token);
-  const user = claims ? (db.prepare("SELECT * FROM users WHERE id = ?").get(claims.sub) as UserRow | undefined) : undefined;
+  const user = claims ? await db.get<UserRow>("SELECT * FROM users WHERE id = ?", claims.sub) : undefined;
   // token_version mismatch = logged out everywhere / password changed / account deleted.
-  if (!claims || !user || user.token_version !== claims.tv || !isSessionActive(db, claims.jti, user.id)) {
+  if (!claims || !user || user.token_version !== claims.tv || !(await isSessionActive(db, claims.jti, user.id))) {
     clearSessionCookie(res);
     return null;
   }
@@ -51,21 +51,23 @@ function sessionUser(db: Db, req: Request, res: Response): { user: UserRow; sess
 
 export function requireAuth(db: Db) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const session = sessionUser(db, req, res);
-    if (!session) return next(new HttpError(401, "Not authenticated", "unauthenticated"));
-    req.user = session.user;
-    req.sessionId = session.sessionId;
-    next();
+    sessionUser(db, req, res).then((session) => {
+      if (!session) return next(new HttpError(401, "Not authenticated", "unauthenticated"));
+      req.user = session.user;
+      req.sessionId = session.sessionId;
+      next();
+    }, next);
   };
 }
 
 /** Attaches req.user when a valid session exists, but lets guests through. */
 export function optionalAuth(db: Db) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const session = sessionUser(db, req, res);
-    req.user = session?.user;
-    req.sessionId = session?.sessionId;
-    next();
+    sessionUser(db, req, res).then((session) => {
+      req.user = session?.user;
+      req.sessionId = session?.sessionId;
+      next();
+    }, next);
   };
 }
 

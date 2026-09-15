@@ -109,7 +109,7 @@ describe("D-5 password hash slots", () => {
   });
 
   it("signup, login (known and unknown email), password change and deletion return 503 when no slot frees up", async () => {
-    const ctx = testApp();
+    const ctx = await testApp();
     const user = await signedUpUser(ctx, "slots@example.com");
     passwordHashSlots.waitMs = 50;
     const release = holdGlobalSlots();
@@ -136,7 +136,7 @@ describe("D-5 password hash slots", () => {
   });
 
   it("never runs more than 2 scrypt operations during a burst of logins", async () => {
-    const ctx = testApp();
+    const ctx = await testApp();
     await signedUpUser(ctx, "burst@example.com");
     let peak = 0;
     const sampler = setInterval(() => (peak = Math.max(peak, passwordHashSlots.inUse)), 1);

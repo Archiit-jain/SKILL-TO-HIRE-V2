@@ -75,7 +75,7 @@ export default function App() {
   if (!user && auth.open) {
     return (
       <>
-        <PreviewBanner className="fixed top-0 inset-x-0 z-50" />
+        <PreviewBanner persistentStorage={providers.persistentStorage} className="fixed top-0 inset-x-0 z-50" />
         <AuthPage
           key={auth.notice ?? "auth"}
           providers={providers}
@@ -128,7 +128,7 @@ export default function App() {
         lockedPages={LOCKED_PAGES}
       />
       <main className="flex-1 overflow-y-auto">
-        <PreviewBanner className="sticky top-0 z-40" />
+        <PreviewBanner persistentStorage={providers.persistentStorage} className="sticky top-0 z-40" />
         {verifyOutcome?.ok && (
           <div role="status" className="flex items-center gap-2 bg-emerald-50 text-emerald-800 text-sm px-6 py-3 border-b border-emerald-200">
             <CheckCircle2 className="w-4 h-4" />

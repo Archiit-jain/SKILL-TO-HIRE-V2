@@ -35,9 +35,9 @@ export const nameSchema = z
   .regex(/^[^<>\u0000-\u001F]+$/, "Name contains invalid characters");
 
 /** Starts a new server-side session (D-7) and moves this browser's free guest analysis into the account (D-6). */
-export function startSession(db: Db, req: Request, res: Response, user: UserRow) {
-  setSessionCookie(res, createSession(db, user.id, user.token_version));
-  claimGuestAnalyses(db, req, user.id);
+export async function startSession(db: Db, req: Request, res: Response, user: UserRow) {
+  setSessionCookie(res, await createSession(db, user.id, user.token_version));
+  await claimGuestAnalyses(db, req, user.id);
 }
 
 export async function assertAcceptableEmail(deps: AppDeps, email: string) {
@@ -47,14 +47,13 @@ export async function assertAcceptableEmail(deps: AppDeps, email: string) {
 
 export function authRouter(db: Db, deps: AppDeps) {
   const router = Router();
-  const byEmail = db.prepare("SELECT * FROM users WHERE email = ?");
-  const byId = db.prepare("SELECT * FROM users WHERE id = ?");
-  const bySub = db.prepare("SELECT * FROM users WHERE google_sub = ?");
-  const bumpTokenVersion = db.prepare("UPDATE users SET token_version = token_version + 1 WHERE id = ?");
+  const byEmail = (email: string) => db.get<UserRow>("SELECT * FROM users WHERE email = ?", email);
+  const byId = (id: string) => db.get<UserRow>("SELECT * FROM users WHERE id = ?", id);
+  const bySub = (sub: string) => db.get<UserRow>("SELECT * FROM users WHERE google_sub = ?", sub);
 
-  /** Which sign-in methods the frontend should offer. */
+  /** Which sign-in methods the frontend should offer, and whether saved data persists (for the preview banner). */
   router.get("/providers", (_req, res) => {
-    res.json({ googleClientId: deps.googleClientId, emailSignup: deps.mailer.canDeliver });
+    res.json({ googleClientId: deps.googleClientId, emailSignup: deps.mailer.canDeliver, persistentStorage: db.persistent });
   });
 
   router.post(
@@ -72,18 +71,24 @@ export function authRouter(db: Db, deps: AppDeps) {
       // to an existing account.
       await assertAcceptableEmail(deps, body.email);
       const hash = await hashPassword(body.password);
-      let existing = byEmail.get(body.email) as UserRow | undefined;
+      let existing = await byEmail(body.email);
       if (!existing) {
         const id = randomUUID();
         const now = new Date().toISOString();
         try {
-          db.prepare(
-            "INSERT INTO users (id, name, email, password_hash, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)"
-          ).run(id, body.name, body.email, hash, now, now);
-          existing = byId.get(id) as unknown as UserRow;
+          await db.run(
+            "INSERT INTO users (id, name, email, password_hash, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
+            id,
+            body.name,
+            body.email,
+            hash,
+            now,
+            now
+          );
+          existing = (await byId(id))!;
         } catch (err) {
           if (!String((err as Error).message).includes("UNIQUE")) throw err;
-          existing = byEmail.get(body.email) as UserRow | undefined; // a parallel sign-up created it first
+          existing = await byEmail(body.email); // a parallel sign-up created it first
           if (!existing) throw err;
         }
       }
@@ -113,7 +118,7 @@ export function authRouter(db: Db, deps: AppDeps) {
       const accountKey = emailKey(body.email);
       const waitSeconds = deps.failedLogins.tryConsume(accountKey);
       if (waitSeconds !== null) throw rateLimited(waitSeconds);
-      const user = byEmail.get(body.email) as UserRow | undefined;
+      const user = await byEmail(body.email);
       let ok: boolean;
       try {
         // Always run one real scrypt comparison, so response time doesn't reveal whether the email exists or signs in
@@ -130,7 +135,7 @@ export function authRouter(db: Db, deps: AppDeps) {
       if (!user.email_verified) {
         throw new HttpError(403, "Please verify your email first. Check your inbox for the link.", "email_not_verified");
       }
-      startSession(db, req, res, user);
+      await startSession(db, req, res, user);
       res.json({ user: publicUser(user) });
     })
   );
@@ -141,7 +146,7 @@ export function authRouter(db: Db, deps: AppDeps) {
     deps.ipLimiters.verification,
     handler(async (req, res) => {
       const body = parseBody(z.object({ email: emailSchema }), req.body);
-      const user = byEmail.get(body.email) as UserRow | undefined;
+      const user = await byEmail(body.email);
       if (user && !user.email_verified && deps.mailer.canDeliver) {
         try {
           await sendVerification(db, deps.mailer, user);
@@ -156,14 +161,14 @@ export function authRouter(db: Db, deps: AppDeps) {
   router.post(
     "/verify-email",
     deps.ipLimiters.verification,
-    handler((req, res) => {
+    handler(async (req, res) => {
       const body = parseBody(z.object({ token: z.string().min(20).max(200) }), req.body);
-      const userId = consumeVerification(db, body.token);
-      if (!userId) {
+      const userId = await consumeVerification(db, body.token);
+      const user = userId ? await byId(userId) : undefined;
+      if (!user) {
         throw new HttpError(400, "This verification link is invalid or has expired. Request a new one.", "invalid_token");
       }
-      const user = byId.get(userId) as unknown as UserRow;
-      startSession(db, req, res, user);
+      await startSession(db, req, res, user);
       res.json({ user: publicUser(user) });
     })
   );
@@ -179,52 +184,70 @@ export function authRouter(db: Db, deps: AppDeps) {
       if (!identity.emailVerified) throw new HttpError(403, "Your Google account email isn't verified.", "google_email_unverified");
 
       const now = new Date().toISOString();
-      let user = bySub.get(identity.sub) as UserRow | undefined;
+      let user = await bySub(identity.sub);
       if (!user) {
-        const existing = byEmail.get(identity.email) as UserRow | undefined;
+        const existing = await byEmail(identity.email);
         if (existing) {
           if (existing.email_verified) {
-            db.prepare("UPDATE users SET google_sub = ?, updated_at = ? WHERE id = ?").run(identity.sub, now, existing.id);
+            await db.run("UPDATE users SET google_sub = ?, updated_at = ? WHERE id = ?", identity.sub, now, existing.id);
           } else {
             // Someone registered this email with a password but never proved they own it. Google has now proven the
             // real owner, so drop that unverified password and revoke its sessions (prevents pre-registration takeover).
-            db.prepare(
-              "UPDATE users SET google_sub = ?, email_verified = 1, password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?"
-            ).run(identity.sub, NO_PASSWORD, now, existing.id);
-            db.prepare("DELETE FROM email_verifications WHERE user_id = ?").run(existing.id);
-            revokeAllSessions(db, existing.id); // D-7: the squatter's sessions are deleted, not only version-revoked
+            // One transaction, so a crash can't leave the account half taken over.
+            await db.transaction(async (tx) => {
+              await tx.run(
+                "UPDATE users SET google_sub = ?, email_verified = 1, password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?",
+                identity.sub,
+                NO_PASSWORD,
+                now,
+                existing.id
+              );
+              await tx.run("DELETE FROM email_verifications WHERE user_id = ?", existing.id);
+              // D-7: the squatter's sessions are deleted, not only version-revoked
+              await tx.run("DELETE FROM sessions WHERE user_id = ?", existing.id);
+            });
           }
-          user = byId.get(existing.id) as unknown as UserRow;
+          user = (await byId(existing.id))!;
         } else {
           const id = randomUUID();
           const name = (identity.name ?? identity.email.split("@")[0]).replace(/[<>\u0000-\u001F]/g, "").trim().slice(0, 80) || "Skill2Hire user";
-          db.prepare(
-            "INSERT INTO users (id, name, email, password_hash, email_verified, google_sub, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)"
-          ).run(id, name, identity.email, NO_PASSWORD, identity.sub, now, now);
-          user = byId.get(id) as unknown as UserRow;
+          await db.run(
+            "INSERT INTO users (id, name, email, password_hash, email_verified, google_sub, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            id,
+            name,
+            identity.email,
+            NO_PASSWORD,
+            identity.sub,
+            now,
+            now
+          );
+          user = (await byId(id))!;
         }
       }
-      startSession(db, req, res, user);
+      await startSession(db, req, res, user);
       res.json({ user: publicUser(user) });
     })
   );
 
   /** Revokes only this device's session (D-7). Always 204, with or without a valid session. */
-  router.post("/logout", (req, res) => {
-    const token = req.cookies?.[SESSION_COOKIE];
-    const claims = typeof token === "string" ? verifySession(token) : null;
-    if (claims) revokeSession(db, claims.jti, claims.sub);
-    clearSessionCookie(res);
-    res.status(204).end();
-  });
+  router.post(
+    "/logout",
+    handler(async (req, res) => {
+      const token = req.cookies?.[SESSION_COOKIE];
+      const claims = typeof token === "string" ? verifySession(token) : null;
+      if (claims) await revokeSession(db, claims.jti, claims.sub);
+      clearSessionCookie(res);
+      res.status(204).end();
+    })
+  );
 
   /** Revokes every session for this user (all devices). */
   router.post(
     "/logout-all",
     requireAuth(db),
-    handler((req, res) => {
-      revokeAllSessions(db, req.user!.id);
-      bumpTokenVersion.run(req.user!.id);
+    handler(async (req, res) => {
+      await revokeAllSessions(db, req.user!.id);
+      await db.run("UPDATE users SET token_version = token_version + 1 WHERE id = ?", req.user!.id);
       clearSessionCookie(res);
       res.status(204).end();
     })

@@ -39,16 +39,7 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots" | "docum
   const router = Router();
   const auth = requireAuth(db);
 
-  const insert = db.prepare(`INSERT INTO analyses
-    (id, user_id, resume_name, jd_title, overall_score, strong_count, partial_count, missing_count, result_json, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  const listForUser = db.prepare(
-    "SELECT id, resume_name, jd_title, overall_score, strong_count, partial_count, missing_count, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 100"
-  );
-  const latestForUser = db.prepare("SELECT result_json FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1");
   // user_id is always part of the WHERE clause so one user can never read another user's analysis (no IDOR).
-  const getForUser = db.prepare("SELECT result_json FROM analyses WHERE id = ? AND user_id = ?");
-  const deleteForUser = db.prepare("DELETE FROM analyses WHERE id = ? AND user_id = ?");
 
   router.post(
     "/",
@@ -56,13 +47,13 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots" | "docum
     optionalAuth(db),
     // Guests get one analysis per browser (free-use marker, D-6). Checked before the upload is parsed so blocked
     // requests stay cheap; expired guest data is purged on the way.
-    (req, _res, next) => {
+    handler(async (req, _res, next) => {
       if (req.user) return next();
-      purgeExpiredGuestData(db);
+      await purgeExpiredGuestData(db);
       const guestId = readGuestId(req);
-      if (guestId && guestHasUsedFreeAnalysis(db, guestId)) return next(new HttpError(401, LOGIN_REQUIRED, "login_required"));
+      if (guestId && (await guestHasUsedFreeAnalysis(db, guestId))) return next(new HttpError(401, LOGIN_REQUIRED, "login_required"));
       next();
-    },
+    }),
     upload.fields([
       { name: "resume", maxCount: 1 },
       { name: "jdFile", maxCount: 1 },
@@ -134,13 +125,16 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots" | "docum
       if (!req.user) {
         const guestId = ensureGuestId(req, res);
         // Marker + result are written atomically; a parallel request from the same browser gets login_required.
-        if (!recordGuestAnalysis(db, guestId, result.id, JSON.stringify(result), result.analyzedAt)) {
+        if (!(await recordGuestAnalysis(db, guestId, result.id, JSON.stringify(result), result.analyzedAt))) {
           throw new HttpError(401, LOGIN_REQUIRED, "login_required");
         }
         return res.status(201).json({ result, guest: true });
       }
 
-      insert.run(
+      await db.run(
+        `INSERT INTO analyses
+          (id, user_id, resume_name, jd_title, overall_score, strong_count, partial_count, missing_count, result_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         result.id,
         req.user!.id,
         result.resumeName,
@@ -156,8 +150,14 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots" | "docum
     })
   );
 
-  router.get("/", auth, (req, res) => {
-    const rows = listForUser.all(req.user!.id) as unknown as Omit<AnalysisRow, "result_json">[];
+  router.get(
+    "/",
+    auth,
+    handler(async (req, res) => {
+    const rows = await db.all<Omit<AnalysisRow, "result_json">>(
+      "SELECT id, resume_name, jd_title, overall_score, strong_count, partial_count, missing_count, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 100",
+      req.user!.id
+    );
     res.json({
       analyses: rows.map((r) => ({
         id: r.id,
@@ -170,41 +170,53 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots" | "docum
         missingCount: r.missing_count,
       })),
     });
-  });
+    })
+  );
 
   /** Latest analysis for the signed-in user, or this browser's free guest analysis. */
-  router.get("/latest", optionalAuth(db), (req, res) => {
-    const guestId = readGuestId(req);
-    const json = req.user
-      ? ((latestForUser.get(req.user.id) as { result_json: string } | undefined)?.result_json ?? null)
-      : guestId
-        ? latestGuestResult(db, guestId) // unclaimed and at most 30 days old (D-6)
-        : null;
-    res.json({ result: json ? (JSON.parse(json) as AnalysisResult) : null });
-  });
+  router.get(
+    "/latest",
+    optionalAuth(db),
+    handler(async (req, res) => {
+      const guestId = readGuestId(req);
+      const json = req.user
+        ? ((await db.get<{ result_json: string }>("SELECT result_json FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", req.user.id))
+            ?.result_json ?? null)
+        : guestId
+          ? await latestGuestResult(db, guestId) // unclaimed and at most 30 days old (D-6)
+          : null;
+      res.json({ result: json ? (JSON.parse(json) as AnalysisResult) : null });
+    })
+  );
 
-  router.get("/:id", auth, (req, res) => {
-    const { id } = parseBody(idParam, req.params);
-    const row = getForUser.get(id, req.user!.id) as { result_json: string } | undefined;
-    if (!row) throw new HttpError(404, "Analysis not found", "not_found");
-    res.json({ result: JSON.parse(row.result_json) as AnalysisResult });
-  });
+  router.get(
+    "/:id",
+    auth,
+    handler(async (req, res) => {
+      const { id } = parseBody(idParam, req.params);
+      const row = await db.get<{ result_json: string }>("SELECT result_json FROM analyses WHERE id = ? AND user_id = ?", id, req.user!.id);
+      if (!row) throw new HttpError(404, "Analysis not found", "not_found");
+      res.json({ result: JSON.parse(row.result_json) as AnalysisResult });
+    })
+  );
 
-  router.delete("/:id", auth, (req, res) => {
-    const { id } = parseBody(idParam, req.params);
-    const info = deleteForUser.run(id, req.user!.id);
-    if (!info.changes) throw new HttpError(404, "Analysis not found", "not_found");
-    res.status(204).end();
-  });
+  router.delete(
+    "/:id",
+    auth,
+    handler(async (req, res) => {
+      const { id } = parseBody(idParam, req.params);
+      const info = await db.run("DELETE FROM analyses WHERE id = ? AND user_id = ?", id, req.user!.id);
+      if (!info.changes) throw new HttpError(404, "Analysis not found", "not_found");
+      res.status(204).end();
+    })
+  );
 
   return router;
 }
 
-export function loadAnalysis(db: Db, userId: string, id?: string): AnalysisResult | null {
-  const row = (
-    id
-      ? db.prepare("SELECT result_json FROM analyses WHERE id = ? AND user_id = ?").get(id, userId)
-      : db.prepare("SELECT result_json FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1").get(userId)
-  ) as { result_json: string } | undefined;
+export async function loadAnalysis(db: Db, userId: string, id?: string): Promise<AnalysisResult | null> {
+  const row = id
+    ? await db.get<{ result_json: string }>("SELECT result_json FROM analyses WHERE id = ? AND user_id = ?", id, userId)
+    : await db.get<{ result_json: string }>("SELECT result_json FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", userId);
   return row ? (JSON.parse(row.result_json) as AnalysisResult) : null;
 }

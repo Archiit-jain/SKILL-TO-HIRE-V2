@@ -10,15 +10,15 @@ import { config, PROJECT_ROOT } from "../src/config.js";
 import { accountExistsEmail, mailErrorCode } from "../src/email/mailer.js";
 import { createIpLimiters, IP_LIMITS, RADIX_SCROLL_AREA_STYLE, RADIX_SCROLL_AREA_STYLE_HASH } from "../src/middleware/security.js";
 import type { EmailCheckResult } from "../src/security/email-check.js";
-import { CSRF, count, signedUpUser, testApp } from "./helpers.js";
+import { CSRF, count, signedUpUser, testApp, type TestApp } from "./helpers.js";
 
 const RATE_LIMITED = { error: { code: "rate_limited", message: "Too many requests, please try again later" } };
 
 const enforced = () => testApp({ ipLimiters: createIpLimiters({ enabled: true }) });
-const hit = (app: ReturnType<typeof testApp>["app"], route: string, body: object, headers: Record<string, string> = {}) =>
+const hit = (app: TestApp["app"], route: string, body: object, headers: Record<string, string> = {}) =>
   request(app).post(`/api${route}`).set(CSRF).set(headers).send(body);
 
-async function exhaust(app: ReturnType<typeof testApp>["app"], route: string, body: object, limit: number, headers?: Record<string, string>) {
+async function exhaust(app: TestApp["app"], route: string, body: object, limit: number, headers?: Record<string, string>) {
   for (let i = 0; i < limit; i++) {
     const res = await hit(app, route, body, headers);
     assert.notEqual(res.status, 429, `request ${i + 1} of ${limit} to ${route} must not be limited`);
@@ -35,7 +35,7 @@ describe("P2 split per-IP rate limits (D-8)", () => {
   });
 
   it("limits login to 20 per 15 min per IP, independently of sign-up", async () => {
-    const { app } = enforced();
+    const { app } = await enforced();
     // A different address each time, so the per-account limit (5 failures) doesn't fire first.
     for (let i = 0; i < 20; i++) {
       const res = await hit(app, "/auth/login", { email: `nobody${i}@example.com`, password: "wrong-password" });
@@ -50,13 +50,13 @@ describe("P2 split per-IP rate limits (D-8)", () => {
   });
 
   it("limits sign-up to 5 per hour per IP", async () => {
-    const { app } = enforced();
+    const { app } = await enforced();
     const blocked = await exhaust(app, "/auth/signup", { name: "N", email: "x@example.com", password: "short" }, 5);
     assert.equal(blocked.status, 429);
   });
 
   it("shares 10 per 15 min between verify-email and resend-verification", async () => {
-    const { app } = enforced();
+    const { app } = await enforced();
     for (let i = 0; i < 5; i++) await hit(app, "/auth/verify-email", { token: "not-a-real-token-but-long-enough" });
     for (let i = 0; i < 5; i++) await hit(app, "/auth/resend-verification", { email: "someone@example.com" });
     assert.equal((await hit(app, "/auth/resend-verification", { email: "someone@example.com" })).status, 429);
@@ -64,13 +64,13 @@ describe("P2 split per-IP rate limits (D-8)", () => {
   });
 
   it("limits Google sign-in to 20 per 15 min per IP", async () => {
-    const { app } = enforced();
+    const { app } = await enforced();
     const blocked = await exhaust(app, "/auth/google", { credential: "x".repeat(40) }, 20);
     assert.equal(blocked.status, 429);
   });
 
   it("limits analyses to 30 per hour per IP", async () => {
-    const { app } = enforced();
+    const { app } = await enforced();
     for (let i = 0; i < 30; i++) {
       const res = await request(app).post("/api/analyses").set(CSRF);
       assert.notEqual(res.status, 429);
@@ -80,7 +80,7 @@ describe("P2 split per-IP rate limits (D-8)", () => {
 
   it("ignores a spoofed X-Forwarded-For unless TRUST_PROXY is on", async () => {
     assert.equal(config.trustProxy, false);
-    const { app } = enforced();
+    const { app } = await enforced();
     for (let i = 0; i < 20; i++) {
       await hit(app, "/auth/login", { email: `spoof${i}@example.com`, password: "wrong-password" }, { "X-Forwarded-For": `203.0.113.${i}` });
     }
@@ -89,7 +89,7 @@ describe("P2 split per-IP rate limits (D-8)", () => {
   });
 
   it("stays disabled for other tests unless enabled explicitly", async () => {
-    const { app } = testApp();
+    const { app } = await testApp();
     for (let i = 0; i < 25; i++) await hit(app, "/auth/login", { email: `open${i}@example.com`, password: "wrong-password" });
     assert.equal((await hit(app, "/auth/login", { email: "open-last@example.com", password: "wrong-password" })).status, 401);
   });
@@ -97,11 +97,11 @@ describe("P2 split per-IP rate limits (D-8)", () => {
 
 describe("P2 sign-up doesn't reveal registered emails (D-10)", () => {
   it("answers new, unverified and verified addresses identically and never changes an existing account", async () => {
-    const ctx = testApp();
+    const ctx = await testApp();
     await signedUpUser(ctx, "verified@example.com", "original-pass-1");
     const pending = await request(ctx.app).post("/api/auth/signup").set(CSRF).send({ name: "P", email: "pending@example.com", password: "pending-pass-1" });
     assert.equal(pending.status, 201);
-    const before = ctx.db.prepare("SELECT * FROM users WHERE email = 'verified@example.com'").get();
+    const before = (await ctx.db.get("SELECT * FROM users WHERE email = 'verified@example.com'"));
 
     const outbox = ctx.mailer.outbox.length;
     const brandNew = await request(ctx.app).post("/api/auth/signup").set(CSRF).send({ name: "N", email: "brand-new@example.com", password: "password-123" });
@@ -112,8 +112,8 @@ describe("P2 sign-up doesn't reveal registered emails (D-10)", () => {
       assert.equal(res.status, 201);
       assert.deepEqual(res.body, { verificationRequired: true, email });
     }
-    assert.deepEqual(ctx.db.prepare("SELECT * FROM users WHERE email = 'verified@example.com'").get(), before, "existing account untouched");
-    assert.equal(count(ctx.db, "SELECT COUNT(*) AS n FROM users WHERE email = 'pending@example.com'"), 1);
+    assert.deepEqual((await ctx.db.get("SELECT * FROM users WHERE email = 'verified@example.com'")), before, "existing account untouched");
+    assert.equal(await count(ctx.db, "SELECT COUNT(*) AS n FROM users WHERE email = 'pending@example.com'"), 1);
 
     const sent = ctx.mailer.outbox.slice(outbox);
     assert.equal(sent.find((m) => m.to === "brand-new@example.com")?.subject, "Verify your email for Skill2Hire");
@@ -133,7 +133,7 @@ describe("P2 sign-up doesn't reveal registered emails (D-10)", () => {
 
   it("disposable addresses are still rejected before any account lookup", async () => {
     const checkEmail = async (): Promise<EmailCheckResult> => ({ ok: false, code: "disposable_email", message: "Temporary or disposable email addresses aren't allowed. Please use your real email." });
-    const ctx = testApp({ checkEmail });
+    const ctx = await testApp({ checkEmail });
     const res = await request(ctx.app).post("/api/auth/signup").set(CSRF).send({ name: "N", email: "x@example.com", password: "password-123" });
     assert.equal(res.status, 422);
     assert.equal(res.body.error.code, "disposable_email");
@@ -142,13 +142,13 @@ describe("P2 sign-up doesn't reveal registered emails (D-10)", () => {
 
 describe("P2 /api/health exposure (L-4)", () => {
   it("production answers only {status}", async () => {
-    const res = await request(testApp({ healthDetails: false }).app).get("/api/health");
+    const res = await request((await testApp({ healthDetails: false })).app).get("/api/health");
     assert.equal(res.status, 200);
     assert.deepEqual(res.body, { status: "ok" });
   });
 
   it("development/test keep the diagnostic fields, and production is the default when isProd", async () => {
-    const res = await request(testApp().app).get("/api/health");
+    const res = await request((await testApp()).app).get("/api/health");
     assert.deepEqual(Object.keys(res.body).sort(), ["assistant", "ephemeralStorage", "status"]);
     assert.equal(config.isProd, false);
   });
@@ -161,7 +161,7 @@ describe("P2 CSP without 'unsafe-inline' styles", () => {
     const radixSource = readFileSync(path.join(PROJECT_ROOT, "node_modules", "@radix-ui", "react-scroll-area", "dist", "index.mjs"), "utf8");
     assert.ok(radixSource.includes(RADIX_SCROLL_AREA_STYLE), "the hashed style matches the installed Radix version");
 
-    const csp = String((await request(testApp().app).get("/api/health")).headers["content-security-policy"]);
+    const csp = String((await request((await testApp()).app).get("/api/health")).headers["content-security-policy"]);
     const styleSrc = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("style-src "));
     assert.equal(styleSrc, `style-src 'self' ${hash} https://accounts.google.com/gsi/style`);
     assert.ok(!csp.includes("unsafe-inline"));
@@ -195,7 +195,7 @@ describe("P2 log hygiene (L-5)", () => {
 
   it("sign-up email failures, parser failures and unhandled errors don't log messages, emails or content", async () => {
     const failing = { canDeliver: true, send: async () => { throw Object.assign(new Error("550 mailbox victim@example.com unavailable"), { code: "EENVELOPE" }); } };
-    const ctx = testApp({ mailer: failing });
+    const ctx = await testApp({ mailer: failing });
     capture();
     const res = await request(ctx.app).post("/api/auth/signup").set(CSRF).send({ name: "Victim", email: "victim@example.com", password: "password-123" });
     assert.equal(res.status, 502);

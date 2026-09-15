@@ -18,7 +18,7 @@ import { MemoryMailer } from "../src/email/mailer.js";
 import { makeDocx, makeMultiPagePdf, makePdf, SAMPLE_JD, SAMPLE_RESUME } from "./fixtures.js";
 
 const CSRF = { "X-Requested-With": "skill2hire" };
-const app = createApp(openDb(":memory:"), { mailer: new MemoryMailer() });
+const app = createApp(await openDb(), { mailer: new MemoryMailer() });
 
 /** Each request without a cookie is a new guest, so every call gets its own free analysis. */
 function analyse(resume: { data: Buffer; name: string }, jd: { text?: string; file?: { data: Buffer; name: string } }) {
