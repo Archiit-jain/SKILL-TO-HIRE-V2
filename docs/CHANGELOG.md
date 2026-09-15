@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased — security remediation P2 and P3 (branch `security/remediation`)
+
+### Security
+- **Parse deadline (D-11):** 20 s per upload request; documents are parsed in a worker thread that is terminated at the
+  deadline (422 `file_too_complex`), with the parse slot held until the thread exits. The native canvas addon is
+  replaced by a placeholder in the worker (terminating a worker that loaded it crashed the process), and one worker is
+  used per instance (two exceeded the 1024 MB Vercel function). Falls back to in-process parsing with a reason code.
+- **Rate limits (D-8):** the shared auth limiter is split into login, sign-up, verification and Google limiters with
+  the approved values; the limiters are now testable and tested.
+- **Sign-up enumeration (D-10):** identical 201 for new and existing addresses; existing verified owners get a notice email.
+- **CSP:** `style-src` without `'unsafe-inline'` (Radix ScrollArea style allowed by hash), verified in a browser.
+- **Health (L-4):** production `/api/health` returns only `{status}`.
+- **Logs (L-5):** error classes and reason codes instead of messages that could contain emails, content or token details.
+- **Dependency audit (L-6):** `npm run audit` and a GitHub Actions workflow (audit, typecheck, tests, build).
+- **P3:** `docs/RAG-SECURITY.md` design guardrails for a future RAG feature (not implemented).
+
+## Unreleased — security remediation P1 (branch `security/remediation`)
+
+### Security
+- **Migration 3:** `guest_free_use`, `sessions`, `assistant_usage`, `assistant_usage_global`; claimed guest rows deleted.
+- **D-4:** resume text over 100,000 characters, JD text over 50,000 and PDFs over 20 pages are rejected with
+  `422 document_too_long` instead of being silently truncated or partly read.
+- **D-5:** at most 2 concurrent scrypt operations; 5 s wait, then `503 server_busy`.
+- **D-6:** guest free-use marker (365 days), 30-day guest results, claim deletes guest content (fixes H-2).
+- **D-7:** database-backed sessions with a `jti`; logout revokes the copied token immediately (fixes M-1); email
+  change signs out other devices (L-1).
+- **D-8:** 5 failed logins per account per 15 min; 60 assistant requests per user per hour.
+- **D-9:** Gemini quotas (20/user, 500/global per UTC day), mandatory contact-detail redaction, JSON payload with an
+  untrusted-data instruction, output validation with rules fallback, reason-code-only logging, Assistant disclosure.
+- **M-8:** the Vercel production deployment refuses to start without `JWT_SECRET`.
+- Login runs a real scrypt comparison for Google-only accounts too, so they can't be told apart by timing.
+- Architecture test for owner-scoped SQL.
+- **Deploy note:** every user logs in once after deployment (old tokens have no `jti`); set `JWT_SECRET` for Vercel
+  production before merging to `main`.
+
+## Unreleased — security remediation P0 (branch `security/remediation`)
+
+### Security
+- **DOCX guard** before mammoth: ZIP structure checks, 20 MB declared total, relationship-aware 4 MB XML caps, real
+  size + CRC-32 verification of every XML part, DTD/ENTITY rejection. Fixes the audit's C-1 (129 KB DOCX → 3.46 GB)
+  and H-1 (declared-size lie inflated to 400 MB before rejection).
+- **PDF pre-scan** before pdf.js: encrypted PDFs and unsupported/chained filters rejected; Flate streams counted in
+  64 KB chunks against 10 MB per stream / 30 MB total without trusting `/Length` or `endstream`. Fixes C-2 (285 KB PDF
+  with a 300 MB stream accepted, 1.15 GB).
+- **Parse slots**: at most 2 documents parsed at once per instance; otherwise `503 server_busy` + `Retry-After: 5`.
+- `HttpError` can carry response headers (used for `Retry-After`).
+- Tests: 55 → 117 (DOCX guard 25, PDF guard 31, upload safety API 6); the zip-bomb unit test now uses the new guard.
+
 ## 1.1.0 — 2026-09-13 — Guest analysis, Google sign-in, email verification, Vercel
 
 ### Added

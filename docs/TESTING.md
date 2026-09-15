@@ -6,11 +6,12 @@
 npm test
 ```
 
-Runner: Node's built-in `node:test` via `tsx`, HTTP tests via `supertest`, in-memory SQLite, rate limits disabled
-(`NODE_ENV=test`). Fixtures in `server/tests/fixtures.ts` are **synthetic** (not real people) and include a
+Runner: Node's built-in `node:test` via `tsx`, HTTP tests via `supertest`, in-memory SQLite, IP rate limits disabled
+(`NODE_ENV=test`; the P1 per-account/per-user limits stay active and are tested with injected clocks). Gemini is
+never called: tests inject fake phrasers and need no API key. Fixtures in `server/tests/fixtures.ts` are **synthetic** (not real people) and include a
 generator for a minimal valid PDF.
 
-**Result on 2026-09-13 (v1.1): 54 tests, 13 suites, 54 passed, 0 failed.**
+**Result on 2026-09-15 (security remediation P2 + P3): 220 tests, 44 suites, 220 passed, 0 failed.** `npm run typecheck`, `npm run build` and `npm run audit` (0 vulnerabilities) also pass.
 
 | Suite | Tests | Covers |
 |---|---|---|
@@ -19,7 +20,7 @@ generator for a minimal valid PDF.
 | requirement extraction | 1 | Required vs preferred classification |
 | analyze() | 5 | Strong/partial/missing, weighted score maths, determinism, privacy redaction, skipped components |
 | assistant (rules mode) | 3 | Skill explanation, gap prioritisation, no-analysis response |
-| file handling | 4 | PDF extraction, signature mismatch, zip bomb, filename/PII sanitising |
+| file handling | 4 | PDF extraction, signature mismatch, zip bomb (declared archive total over 20 MB), filename/PII sanitising |
 | source hygiene | 1 | No raw control characters in source files |
 | auth: sign-up and email verification | 9 | No session before verification, link uses APP_ORIGIN, login blocked until verified, single-use & expiring tokens, disposable and no-MX domains rejected, resend doesn't reveal accounts, resend cooldown, sign-up disabled without mail delivery |
 | auth: login and session security | 4 | Generic login errors, CSRF header/origin, forged tokens, security headers incl. Google CSP/COOP |
@@ -27,6 +28,20 @@ generator for a minimal valid PDF.
 | account | 3 | Password change revokes other sessions; email change needs password, blocks disposable, requires re-verification; settings & deletion |
 | guest analysis | 3 | Exactly one analysis per browser, locked routes, guest result claimed on sign-up and free use stays consumed after logout |
 | analyses (signed in) | 7 | PDF + pasted JD, TXT JD, spoofed/oversize/missing input, history, cross-user isolation, assistant, delete |
+| DOCX guard (`docx-guard.test.ts`, 4 suites) | 25 | Approved caps; valid DOCX still extracts; XML part/total/archive/entry caps incl. exact-cap acceptance; the audit's C-1 shape rejected before mammoth; size lies (H-1), CRC and stored-size mismatches; ZIP64, split, encrypted, bzip2/lzma, duplicate names, Unicode Path field; relationship-aware XML caps (renamed, absolute and image-typed targets); DOCTYPE/ENTITY in UTF-8/UTF-16LE/BE; malformed archives → `file_corrupt` |
+| PDF guard (`pdf-guard.test.ts`, 5 suites) | 31 | Approved caps; normal and Flate PDFs still extract; exact-cap acceptance; image codecs; inline images (R-3); per-stream and total caps; the audit's C-2 shape rejected before pdf.js; fake `endstream`, short/indirect `/Length`, escaped names; encrypted PDFs incl. escaped `/Encrypt`; every rejected filter; corrupt Flate; malformed PDFs; linear time on hostile token soup |
+| migration 3 (`migration.test.ts`) | 5 | Fresh DB at v3 with exact schema, v2 file upgrade (markers backfilled before claimed rows deleted), runs once, failed migration rolls back, cascades and constraints |
+| D-4 text/page limits (`text-limits.test.ts`, 2 suites) | 11 | Resume 100,000/100,001, pasted and file JD 50,000/50,001, no truncation, PDF 20/21 pages with the page count checked before text extraction |
+| D-5 password slots (`password-slots.test.ts`) | 7 | Approved values and unchanged scrypt parameters, max 2 concurrent, arrival order, 5 s timeout → 503 + Retry-After, slot released on error, dummy hash covered, signup/login/password change/deletion busy responses, burst of logins |
+| D-6 guest lifecycle (`guest-lifecycle.test.ts`) | 12 | Marker instead of guest_analyses, atomic marker gate and parallel requests, claim deletes content and keeps marker, 30-day results, 365-day markers, account deletion (H-2), pre-P1 leftovers |
+| D-7 sessions (`sessions.test.ts`) | 9 | jti = session row, logout (replay, idempotent, other device), logout-all, password change, email change, Google takeover, unknown/foreign/expired/missing jti, token version, cascade and cleanup |
+| D-8 rate limits (`rate-limits.test.ts`, 2 suites) | 8 | 5 failed logins/account/15 min incl. identical unknown-email response, reset on success, parallel guesses; 60 assistant requests/user/hour with window reset |
+| D-9 Gemini (`gemini-guard.test.ts`, 4 suites) | 18 | Redaction regardless of privacy mode, no file name, JSON boundary, validation (STOP, length, links, numbers, ratings, quotes), 20/user and 500/global quotas, atomic concurrency, UTC rollover, retry counts once, fallback with reason-code-only logs, stored analysis unchanged, exact disclosure |
+| M-8 JWT secret (`config-secret.test.ts`) | 4 | Vercel production and NODE_ENV=production refuse a missing secret; preview and tests keep working |
+| ownership queries (`ownership-queries.test.ts`) | 5 | Every prepared statement on an owned table filters by its owner (TypeScript AST scan, literal SQL only, allow-list can't go stale, the rule catches IDOR-shaped queries) |
+| D-11 parse deadline (`parse-deadline.test.ts`, 2 suites) | 7 | 20 s deadline and one worker; normal PDF/DOCX parsed in the worker (which refuses to start if the native canvas addon loaded); a slow PDF stopped at its deadline and the worker exits, then a fresh worker works; queue time counts; in-process fallback with reason code; route answers 422, releases the slot after the worker exits, doesn't use the guest's free analysis; one deadline for resume + JD file |
+| P2 hardening (`p2-hardening.test.ts`, 5 suites) | 17 | Split IP limits (login 20, sign-up 5, verification 10 shared, Google 20, analysis 30), spoofed X-Forwarded-For ignored, limiters off by default in tests; identical sign-up responses for new/unverified/verified addresses without changing accounts; notice email has no action link; production `/api/health` is `{status}` only; CSP hash equals the installed Radix style and vercel.json matches, no `unsafe-inline`; logs contain no mail messages, emails or document text |
+| upload safety (P0) (`api.test.ts`) | 6 | Approved SEC-D5 values; 503 `server_busy` + `Retry-After: 5` without using a guest's free analysis; slot released after rejections; DOCX and PDF bombs rejected for guests, users and as JD files with nothing stored; encrypted PDF message |
 
 Other checks run:
 
@@ -34,7 +49,9 @@ Other checks run:
 |---|---|---|
 | Type-check (frontend + backend) | `npm run typecheck` | Pass |
 | Production build | `npm run build` | Pass (JS 278 kB / 83 kB gzip) |
-| Dependency audit | `npm audit` | 0 vulnerabilities |
+| Dependency audit | `npm run audit` (`npm audit --audit-level=high`, also in CI) | 0 vulnerabilities |
+| CI | `.github/workflows/security.yml` | Runs `npm ci`, audit, typecheck, tests and a production build on every push and pull request |
+| CSP in a real browser (P2) | Production build on a local port, logged in, Career Assistant with messages | Radix ScrollArea style applied, no CSP violations, no `unsafe-inline` |
 | Production-mode smoke test | `NODE_ENV=production` server on a test port | `/` serves the built SPA, CSP + HSTS present, `/api/health` ok |
 
 ## Manual end-to-end (browser) — performed 2026-09-13
@@ -64,6 +81,7 @@ On Vercel (production URL): health check OK, sign-up + PDF analysis OK (before t
 
 ## Not yet tested
 
-- DOCX upload through the browser (DOCX parsing is covered only by the zip-bomb precheck unit test, since no DOCX fixture exists).
+- DOCX upload through the browser (DOCX parsing is covered by synthetic DOCX fixtures in `docx-guard.test.ts`).
+- Peak memory and parse behaviour on Vercel itself (P0 measurements were taken locally, see `SECURITY.md`).
 - Gemini mode (requires your API key and model choice).
 - Accuracy against real resumes/JDs, and cross-browser/mobile layout.

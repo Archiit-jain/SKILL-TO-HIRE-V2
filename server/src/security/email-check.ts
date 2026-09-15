@@ -53,7 +53,8 @@ export const defaultEmailChecker: EmailChecker = async (email) => {
     if (accepts === false) {
       return { ok: false, code: "email_domain_invalid", message: `The domain "${domain}" can't receive email. Check for typos.` };
     }
-    if (accepts === null) console.warn(`[email-check] DNS inconclusive for ${domain}; allowing (verification link still required)`);
+    // P2 log hardening: no domain in the log (it identifies the user's email provider).
+    if (accepts === null) console.warn("[email-check] DNS inconclusive; allowing (verification link still required)");
   }
   return { ok: true };
 };

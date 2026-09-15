@@ -23,7 +23,8 @@ export const defaultGoogleVerifier: GoogleVerifier = async (credential) => {
     if (!p?.sub || !p.email) return null;
     return { sub: p.sub, email: p.email.toLowerCase(), emailVerified: p.email_verified === true, name: p.name };
   } catch (err) {
-    console.warn("[google] ID token rejected:", (err as Error).message);
+    // P2 log hardening: the error class only; library messages can include token details.
+    console.warn(`[google] ID token rejected: ${(err as Error)?.name ?? "error"}`);
     return null;
   }
 };

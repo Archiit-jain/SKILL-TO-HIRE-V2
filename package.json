@@ -14,7 +14,8 @@
     "build": "tsc -p tsconfig.json --noEmit && tsc -p server/tsconfig.json --noEmit && vite build",
     "start": "cross-env NODE_ENV=production tsx --env-file-if-exists=.env server/src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p server/tsconfig.json --noEmit",
-    "test": "cross-env NODE_ENV=test tsx --test server/tests/*.test.ts"
+    "test": "cross-env NODE_ENV=test tsx --test server/tests/*.test.ts",
+    "audit": "npm audit --audit-level=high"
   },
   "dependencies": {
     "@google/genai": "2.22.0",

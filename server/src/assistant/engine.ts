@@ -1,6 +1,8 @@
 import type { AnalysisResult, SkillStatus } from "../analysis/types.js";
-import { config } from "../config.js";
-import { phraseWithGemini } from "./gemini.js";
+import type { Db } from "../db.js";
+import { buildGeminiPayload, phraseWithGemini, type GeminiPhraser } from "./gemini.js";
+import { reserveGeminiAnswer, type GeminiQuotaLimits } from "./quota.js";
+import { validateGeminiAnswer } from "./validate.js";
 
 export interface AssistantReply {
   content: string;
@@ -126,14 +128,42 @@ export function answerFromAnalysis(question: string, result: AnalysisResult | nu
   };
 }
 
-export async function answer(question: string, result: AnalysisResult | null): Promise<AssistantReply> {
+export interface AnswerContext {
+  db: Db;
+  userId: string;
+  /** null = rules only (no GEMINI_API_KEY/GEMINI_MODEL). */
+  gemini: GeminiPhraser | null;
+  quota: GeminiQuotaLimits;
+  now: Date;
+}
+
+/**
+ * The rules answer is always computed first and is authoritative. Gemini may only reword it (D-9): the request needs a
+ * reserved quota unit, the payload is redacted JSON, and the reply must pass validateGeminiAnswer. Otherwise - no
+ * Gemini configured, quota used up, an error, a timeout or a failed check - the rules answer is returned silently.
+ * Only a reason code is logged; never the question, the evidence or the generated text.
+ */
+export async function answer(question: string, result: AnalysisResult | null, ctx: AnswerContext): Promise<AssistantReply> {
   const base = answerFromAnalysis(question, result);
-  if (!config.gemini || !result) return base;
+  if (!ctx.gemini || !result) return base;
+
+  const quota = reserveGeminiAnswer(ctx.db, ctx.userId, ctx.quota, ctx.now);
+  if (!quota.admitted) {
+    console.info(`[assistant] rules answer used: ${quota.reason}`);
+    return base;
+  }
   try {
-    const phrased = await phraseWithGemini(config.gemini, question, result, base.content);
-    return phrased ? { content: phrased, sources: base.sources, mode: "gemini" } : base;
+    const { payload, contents } = buildGeminiPayload(question, result, base.content);
+    const response = await phraseWithGemini(ctx.gemini, contents);
+    const checked = validateGeminiAnswer(response, payload, result);
+    if (!checked.ok) {
+      console.warn(`[assistant] Gemini answer rejected: ${checked.reason}`);
+      return base;
+    }
+    return { content: checked.text, sources: base.sources, mode: "gemini" };
   } catch (err) {
-    console.warn("[assistant] Gemini call failed, using rule-based answer:", (err as Error).message);
+    const code = (err as { name?: string })?.name === "AbortError" || (err as { name?: string })?.name === "TimeoutError" ? "timeout" : "error";
+    console.warn(`[assistant] Gemini call failed: ${code}`);
     return base;
   }
 }

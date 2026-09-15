@@ -84,3 +84,26 @@ export function verificationEmail(name: string, link: string, ttlHours: number):
 </body></html>`,
   };
 }
+
+/** Sent when someone signs up with an address that already has a verified account (D-10). Contains no action link. */
+export function accountExistsEmail(name: string, appOrigin: string): Omit<EmailMessage, "to"> {
+  return {
+    subject: "You already have a Skill2Hire account",
+    text:
+      `Hi ${name},\n\nSomeone tried to create a Skill2Hire account with this email address, but you already have one.\n\n` +
+      `If it was you, log in at ${appOrigin} (or continue with Google if that's how you signed up).\n\n` +
+      `If it wasn't you, you can ignore this email. Nothing about your account was changed.`,
+    html: `<!doctype html><html><body style="font-family:system-ui,sans-serif;color:#0f172a;line-height:1.5">
+<p>Hi ${escapeHtml(name)},</p>
+<p>Someone tried to create a Skill2Hire account with this email address, but you already have one.</p>
+<p>If it was you, log in at <a href="${escapeHtml(appOrigin)}">${escapeHtml(appOrigin)}</a> (or continue with Google if that's how you signed up).</p>
+<p style="font-size:13px;color:#475569">If it wasn't you, you can ignore this email. Nothing about your account was changed.</p>
+</body></html>`,
+  };
+}
+
+/** A log-safe reason for a failed send: the transport's error code (e.g. EAUTH, ECONNECTION), never its message. */
+export function mailErrorCode(err: unknown): string {
+  const code = (err as { code?: unknown })?.code;
+  return typeof code === "string" && /^[A-Z0-9_]{2,40}$/.test(code) ? code : "send_failed";
+}

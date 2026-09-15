@@ -6,7 +6,9 @@ import { config } from "../src/config.js";
 import { openDb } from "../src/db.js";
 import { MemoryMailer } from "../src/email/mailer.js";
 import type { GoogleIdentity } from "../src/security/google.js";
-import { makePdf, SAMPLE_JD, SAMPLE_RESUME } from "./fixtures.js";
+import zlib from "node:zlib";
+import { ParseSlots } from "../src/analysis/parse-slots.js";
+import { docxEntries, documentXml, makePdf, makePdfWithStreams, makeZip, SAMPLE_JD, SAMPLE_RESUME } from "./fixtures.js";
 
 const CSRF = { "X-Requested-With": "skill2hire" };
 
@@ -20,9 +22,9 @@ async function fakeGoogle(credential: string): Promise<GoogleIdentity | null> {
 const googleCredential = (sub: string, email: string, unverified = false) =>
   `google:${sub}:${email}${unverified ? ":unverified" : ""}:padding-to-min-length`;
 
-function newApp() {
+function newApp(parseSlots?: ParseSlots) {
   const mailer = new MemoryMailer();
-  const app = createApp(openDb(":memory:"), { mailer, verifyGoogle: fakeGoogle, googleClientId: "test-client-id.apps.googleusercontent.com" });
+  const app = createApp(openDb(":memory:"), { mailer, verifyGoogle: fakeGoogle, googleClientId: "test-client-id.apps.googleusercontent.com", parseSlots });
   /** Token from the most recent verification email sent to this address. */
   const tokenFor = (email: string) => {
     const msg = [...mailer.outbox].reverse().find((m) => m.to === email);
@@ -120,9 +122,12 @@ describe("auth: sign-up and email verification", () => {
     assert.equal(strict.mailer.outbox.length, 0);
   });
 
-  it("reports duplicates and answers resend requests without revealing accounts", async () => {
+  it("answers duplicate sign-ups and resend requests without revealing accounts", async () => {
+    // D-10 (P2): an existing address gets the same 201 as a new one; the owner is told by email instead.
     const dup = await request(app).post("/api/auth/signup").set(CSRF).send({ name: "B", email: "a@example.com", password: "password-123" });
-    assert.equal(dup.status, 409);
+    assert.equal(dup.status, 201);
+    assert.deepEqual(dup.body, { verificationRequired: true, email: "a@example.com" });
+    assert.equal(ctx.mailer.outbox.at(-1)?.subject, "You already have a Skill2Hire account");
 
     const before = ctx.mailer.outbox.length;
     const unknown = await request(app).post("/api/auth/resend-verification").set(CSRF).send({ email: "ghost@example.com" });
@@ -440,5 +445,92 @@ describe("analyses (signed in)", () => {
   it("deletes an analysis", async () => {
     assert.equal((await alice.delete(`/api/analyses/${analysisId}`).set(CSRF)).status, 204);
     assert.equal((await alice.get(`/api/analyses/${analysisId}`)).status, 404);
+  });
+});
+
+describe("upload safety (P0)", () => {
+  const slots = new ParseSlots(2);
+  const ctx = newApp(slots);
+  const { app } = ctx;
+  const SAFETY = "This document is too large or complex to process safely.";
+
+  const docxBomb = () => {
+    const para = Buffer.from("<w:p><w:r><w:t>Python developer</w:t></w:r></w:p>");
+    const dense = Buffer.alloc(para.length * Math.ceil((4 * 1024 * 1024 + 1) / para.length)).fill(para);
+    return makeZip(docxEntries("x").map((e) => (e.name === "word/document.xml" ? { ...e, data: documentXml(dense) } : e)));
+  };
+  const pdfBomb = () =>
+    makePdfWithStreams("Experience", [{ dict: "/Filter /FlateDecode", data: zlib.deflateSync(Buffer.alloc(11 * 1024 * 1024, 0x20), { level: 9 }) }]);
+
+  it("uses the approved D-5 values", () => {
+    assert.equal(config.upload.maxConcurrentParses, 2);
+    assert.equal(config.upload.busyRetryAfterSeconds, 5);
+    assert.equal(new ParseSlots().capacity, 2);
+  });
+
+  it("answers 503 server_busy with Retry-After when every parse slot is taken, without using the guest's free analysis", async () => {
+    const guest = request.agent(app);
+    assert.ok(slots.tryAcquire() && slots.tryAcquire());
+    try {
+      const busy = await guest.post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", makePdf(SAMPLE_RESUME), "cv.pdf");
+      assert.equal(busy.status, 503);
+      assert.equal(busy.headers["retry-after"], "5");
+      assert.deepEqual(busy.body, {
+        error: { code: "server_busy", message: "The server is busy processing other documents. Please try again in a few seconds." },
+      });
+      assert.equal(slots.tryAcquire(), false);
+    } finally {
+      slots.release();
+      slots.release();
+    }
+    const ok = await guest.post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", makePdf(SAMPLE_RESUME), "cv.pdf");
+    assert.equal(ok.status, 201, "the refused request did not consume the free analysis");
+    assert.equal(slots.inUse, 0);
+  });
+
+  it("releases the slot after a rejected upload, so later uploads still succeed", async () => {
+    const alice = await verifiedUser(ctx, "slots@example.com");
+    for (let i = 0; i < 3; i++) {
+      const bad = await alice.post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", pdfBomb(), "cv.pdf");
+      assert.equal(bad.status, 422);
+    }
+    assert.equal(slots.inUse, 0);
+    const first = await alice.post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", makePdf(SAMPLE_RESUME), "cv.pdf");
+    const second = await alice.post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", makePdf(SAMPLE_RESUME), "cv.pdf");
+    assert.deepEqual([first.status, second.status], [201, 201]);
+    assert.equal(slots.inUse, 0);
+  });
+
+  for (const [label, build, name] of [
+    ["DOCX memory bomb (C-1)", docxBomb, "cv.docx"],
+    ["PDF compression bomb (C-2)", pdfBomb, "cv.pdf"],
+  ] as const) {
+    it(`rejects a ${label} through the API for guests and users, storing nothing`, async () => {
+      const guest = request.agent(app);
+      const g = await guest.post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", build(), name);
+      assert.equal(g.status, 422);
+      assert.deepEqual(g.body, { error: { code: "file_too_complex", message: SAFETY } });
+      assert.equal((await guest.get("/api/analyses/latest")).body.result, null);
+
+      const user = await verifiedUser(ctx, `bomb-${name.replace(".", "-")}@example.com`);
+      const u = await user.post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", build(), name);
+      assert.equal(u.status, 422);
+      assert.equal(u.body.error.code, "file_too_complex");
+      assert.equal((await user.get("/api/analyses")).body.analyses.length, 0);
+
+      // A bomb uploaded as the JD file is rejected the same way.
+      const jd = await user.post("/api/analyses").set(CSRF).attach("resume", makePdf(SAMPLE_RESUME), "cv.pdf").attach("jdFile", build(), name);
+      assert.equal(jd.status, 422);
+      assert.equal(jd.body.error.code, "file_too_complex");
+    });
+  }
+
+  it("rejects an encrypted PDF with the specific message", async () => {
+    const pdf = makePdfWithStreams("Experience", [], { trailerExtra: "/Encrypt 9 0 R" });
+    const res = await request(app).post("/api/analyses").set(CSRF).field("jdText", SAMPLE_JD).attach("resume", pdf, "cv.pdf");
+    assert.equal(res.status, 422);
+    assert.deepEqual(res.body, {
+      error: { code: "file_too_complex", message: "Encrypted or password-protected PDFs aren't supported. Please upload an unprotected PDF." },
+    });
   });
 });

@@ -2,15 +2,16 @@ import { Router } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { analyze } from "../analysis/analyze.js";
-import { extractText } from "../analysis/extract.js";
+import { assertTextWithinLimit, documentTooLong, JD_TOO_LONG_MESSAGE, RESUME_TOO_LONG_MESSAGE, type DocKind } from "../analysis/extract.js";
+import { serverBusy } from "../analysis/parse-slots.js";
 import { safeFilename } from "../analysis/redact.js";
 import type { AnalysisResult } from "../analysis/types.js";
 import { config } from "../config.js";
 import type { Db } from "../db.js";
+import type { AppDeps } from "../deps.js";
 import { handler, HttpError, parseBody } from "../http.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
-import { analysisLimiter } from "../middleware/security.js";
-import { ensureGuestId, readGuestId } from "../security/guest.js";
+import { ensureGuestId, guestHasUsedFreeAnalysis, latestGuestResult, purgeExpiredGuestData, readGuestId, recordGuestAnalysis } from "../security/guest.js";
 
 // Files stay in memory only; they are never written to disk.
 const upload = multer({
@@ -34,16 +35,9 @@ const idParam = z.object({ id: z.uuid() });
 
 const LOGIN_REQUIRED = "You've used your free analysis. Log in or create an account to run more analyses.";
 
-export function analysesRouter(db: Db) {
+export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots" | "documentParser" | "parseTimeoutMs" | "ipLimiters">) {
   const router = Router();
   const auth = requireAuth(db);
-  const guestHasAnalysis = db.prepare("SELECT 1 FROM guest_analyses WHERE guest_id = ? LIMIT 1");
-  // Conditional insert: two parallel guest requests can't both claim the single free analysis.
-  const insertGuest = db.prepare(`INSERT INTO guest_analyses (id, guest_id, result_json, created_at)
-    SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM guest_analyses WHERE guest_id = ?)`);
-  const latestForGuest = db.prepare(
-    "SELECT result_json FROM guest_analyses WHERE guest_id = ? AND claimed_by IS NULL ORDER BY created_at DESC LIMIT 1"
-  );
 
   const insert = db.prepare(`INSERT INTO analyses
     (id, user_id, resume_name, jd_title, overall_score, strong_count, partial_count, missing_count, result_json, created_at)
@@ -58,12 +52,15 @@ export function analysesRouter(db: Db) {
 
   router.post(
     "/",
-    analysisLimiter,
+    deps.ipLimiters.analysis,
     optionalAuth(db),
-    // Guests get one analysis per browser. Checked before the upload is parsed so blocked requests stay cheap.
+    // Guests get one analysis per browser (free-use marker, D-6). Checked before the upload is parsed so blocked
+    // requests stay cheap; expired guest data is purged on the way.
     (req, _res, next) => {
-      const guestId = req.user ? null : readGuestId(req);
-      if (guestId && guestHasAnalysis.get(guestId)) return next(new HttpError(401, LOGIN_REQUIRED, "login_required"));
+      if (req.user) return next();
+      purgeExpiredGuestData(db);
+      const guestId = readGuestId(req);
+      if (guestId && guestHasUsedFreeAnalysis(db, guestId)) return next(new HttpError(401, LOGIN_REQUIRED, "login_required"));
       next();
     },
     upload.fields([
@@ -76,41 +73,70 @@ export function analysesRouter(db: Db) {
       const jdFile = files.jdFile?.[0];
       const body = parseBody(
         z.object({
-          jdText: z.string().max(config.text.maxJdChars, "Job description is too long").optional(),
+          // Length is checked below (422 document_too_long, D-4); multer's fieldSize still bounds the raw field.
+          jdText: z.string().optional(),
           jdTitle: z.string().trim().max(120).optional(),
         }),
         req.body ?? {}
       );
       if (!resume) throw new HttpError(400, "Resume file is required", "validation");
+      // D-4: pasted JD over the limit is rejected before any parsing (counted on the trimmed text that is analysed).
+      if ((body.jdText?.trim().length ?? 0) > config.text.maxJdChars) throw documentTooLong(JD_TOO_LONG_MESSAGE);
 
       const resumeName = safeFilename(Buffer.from(resume.originalname, "latin1").toString("utf8"));
-      const resumeText = await extractText(resume.buffer, resumeName, ["pdf", "docx"]);
-      if (resumeText.length < config.text.minResumeChars) {
-        throw new HttpError(422, "Could not find enough text in the resume. Scanned/image-only PDFs are not supported.", "empty_text");
-      }
+      // D-5: extraction and analysis run inside a parse slot; when all slots are busy -> 503 server_busy + Retry-After.
+      // A refused request stores nothing, so a guest's free analysis is not used up.
+      if (!deps.parseSlots.tryAcquire()) throw serverBusy();
+      // D-11 (P2): one deadline for all documents of this request. The slot is released only after every document's
+      // parsing has really stopped (finished, or its parse worker was terminated at the deadline).
+      const deadline = Date.now() + deps.parseTimeoutMs;
+      const pending: Promise<void>[] = [];
+      const extractText = (buffer: Buffer, filename: string, allowed: DocKind[]) => {
+        const job = deps.documentParser.extract({ buffer, filename, allowed }, deadline);
+        pending.push(job.settled);
+        return job.text;
+      };
+      const result = await (async () => {
+        const resumeText = assertTextWithinLimit(
+          await extractText(resume.buffer, resumeName, ["pdf", "docx"]),
+          config.upload.maxExtractedChars,
+          RESUME_TOO_LONG_MESSAGE
+        );
+        if (resumeText.length < config.text.minResumeChars) {
+          throw new HttpError(422, "Could not find enough text in the resume. Scanned/image-only PDFs are not supported.", "empty_text");
+        }
 
-      let jdText = body.jdText?.trim() ?? "";
-      if (!jdText && jdFile) {
-        const jdName = safeFilename(Buffer.from(jdFile.originalname, "latin1").toString("utf8"));
-        jdText = await extractText(jdFile.buffer, jdName, ["pdf", "docx", "txt"]);
-      }
-      if (jdText.length < config.text.minJdChars) {
-        throw new HttpError(422, "Please provide a longer job description (paste it or upload a file).", "empty_text");
-      }
+        let jdText = body.jdText?.trim() ?? "";
+        if (!jdText && jdFile) {
+          const jdName = safeFilename(Buffer.from(jdFile.originalname, "latin1").toString("utf8"));
+          jdText = assertTextWithinLimit(
+            await extractText(jdFile.buffer, jdName, ["pdf", "docx", "txt"]),
+            config.text.maxJdChars,
+            JD_TOO_LONG_MESSAGE
+          );
+        }
+        if (jdText.length < config.text.minJdChars) {
+          throw new HttpError(422, "Please provide a longer job description (paste it or upload a file).", "empty_text");
+        }
 
-      const result = analyze({
-        resumeText,
-        jdText: jdText.slice(0, config.text.maxJdChars),
-        resumeName,
-        jdTitle: body.jdTitle,
-        // Guests always get privacy mode (redacted contact details, anonymised file name).
-        privacyMode: req.user ? !!req.user.privacy_mode : true,
+        return analyze({
+          resumeText,
+          jdText,
+          resumeName,
+          jdTitle: body.jdTitle,
+          // Guests always get privacy mode (redacted contact details, anonymised file name).
+          privacyMode: req.user ? !!req.user.privacy_mode : true,
+        });
+      })().finally(() => {
+        void Promise.all(pending).then(() => deps.parseSlots.release());
       });
 
       if (!req.user) {
         const guestId = ensureGuestId(req, res);
-        const info = insertGuest.run(result.id, guestId, JSON.stringify(result), result.analyzedAt, guestId);
-        if (!info.changes) throw new HttpError(401, LOGIN_REQUIRED, "login_required");
+        // Marker + result are written atomically; a parallel request from the same browser gets login_required.
+        if (!recordGuestAnalysis(db, guestId, result.id, JSON.stringify(result), result.analyzedAt)) {
+          throw new HttpError(401, LOGIN_REQUIRED, "login_required");
+        }
         return res.status(201).json({ result, guest: true });
       }
 
@@ -149,10 +175,12 @@ export function analysesRouter(db: Db) {
   /** Latest analysis for the signed-in user, or this browser's free guest analysis. */
   router.get("/latest", optionalAuth(db), (req, res) => {
     const guestId = readGuestId(req);
-    const row = (req.user ? latestForUser.get(req.user.id) : guestId ? latestForGuest.get(guestId) : undefined) as
-      | { result_json: string }
-      | undefined;
-    res.json({ result: row ? (JSON.parse(row.result_json) as AnalysisResult) : null });
+    const json = req.user
+      ? ((latestForUser.get(req.user.id) as { result_json: string } | undefined)?.result_json ?? null)
+      : guestId
+        ? latestGuestResult(db, guestId) // unclaimed and at most 30 days old (D-6)
+        : null;
+    res.json({ result: json ? (JSON.parse(json) as AnalysisResult) : null });
   });
 
   router.get("/:id", auth, (req, res) => {

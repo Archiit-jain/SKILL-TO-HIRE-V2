@@ -22,7 +22,7 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | D-09 | Requirement weights required 1.0 / preferred 0.5; credit strong 1 / partial 0.5 / missing 0 | Other ratios; per-skill frequency weighting | `REQUIREMENT_WEIGHT`, `LEVEL_CREDIT` |
 | D-10 | Strong = mentioned in Experience/Projects (or action-verb line); Partial = mentioned elsewhere | Require N mentions; semantic embedding threshold | `analyze.ts` |
 | D-11 | Education is binary (meets / doesn't meet) | Partial credit for one level below | `analyze.ts` |
-| D-13 | Upload/parse limits: 5 MB (from original UI), 20 PDF pages, 50 MB DOCX uncompressed, 2000 ZIP entries, 100k extracted chars, JD 50k chars, question 1k chars, min 50 chars text | Other values | `config.ts` |
+| D-13 | Upload/parse limits: 5 MB (from original UI), 20 PDF pages, ~~50 MB~~ **20 MB** DOCX uncompressed (changed by SEC-D2), 2000 ZIP entries, 100k extracted chars, JD 50k chars, question 1k chars, min 50 chars text | Other values | `config.ts` |
 | D-14 | Rate limits: api 300/15 min, auth 10/15 min, analysis 30/h, assistant 60/h | Other values; per-account limits | `middleware/security.ts` |
 | D-15 | scrypt N=2^17, r=8, p=1 | Argon2id (needs native package), bcrypt | `security/password.ts` |
 | D-16 | Password policy: 8–128 chars (8 from the original UI), no composition rules | Breached-password check, stronger minimum | `routes/auth.ts` |
@@ -68,7 +68,7 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | D-42 | Unverified password account + later Google sign-in with same email → Google wins, password removed | Refuse and ask user to verify first |
 | D-43 | Email change keeps the current session but requires verification before the next login | Keep old email until the new one is verified (pending-email flow) |
 | D-44 | Guest cookie lifetime 1 year; guest results kept until claimed (on Vercel they vanish with the temp DB anyway) | Shorter lifetime; periodic purge |
-| D-45 | Duplicate sign-up still returns 409 (reveals registration), as in D-20 | Always "check your email" |
+| D-45 | ~~Duplicate sign-up still returns 409 (reveals registration), as in D-20~~ → changed by SEC-D10 (P2): always the same 201; the owner is told by email | Always "check your email" |
 
 ## Deployment decisions (2026-09-13)
 
@@ -76,3 +76,44 @@ These were needed to make the app work. Each has alternatives; confirm or change
 |---|---|---|
 | D-30 | Teammate preview hosted on Vercel team `sillyguysolutions`, deployed from GitHub repo `Archiit-jain/SKILL-TO-HIRE-V2` (auto-deploy on push) | Chosen by user |
 | D-31 | On Vercel the upload limit is 4 MB (platform body limit 4.5 MB), versus 5 MB locally | PENDING APPROVAL (forced by platform) |
+
+## Security remediation decisions (approved by the owner, 2026-09-14)
+
+Branch `security/remediation`. IDs are prefixed `SEC-` so they don't clash with the D-numbers above.
+
+| ID | Decision | Priority | Where |
+|---|---|---|---|
+| SEC-D1 | V2 stays **preview-only** on Vercel with the per-instance `/tmp` SQLite; no hosted database yet (documentation in P1) | P1 | docs |
+| SEC-D2 | DOCX caps: 20 MB declared archive total, 4 MB per XML/rels part, 4 MB all XML/rels, 2,000 entries (PROVISIONAL; peak memory measured and reported, see `SECURITY.md`) | P0 | `config.upload`, `analysis/docx-guard.ts` |
+| SEC-D3 | PDF caps: Flate 10 MB per stream, 30 MB per document; reject encrypted PDFs, LZW, RunLength, ASCII85/ASCIIHex, unsupported and chained filters → `422 file_too_complex` | P0 | `config.upload`, `analysis/pdf-guard.ts` |
+| SEC-D5 | At most 2 simultaneous document parses per instance → `503 server_busy`, `Retry-After: 5` (password-hash slots follow in P1) | P0 | `config.upload`, `analysis/parse-slots.ts` |
+| SEC-R5 | Encrypted PDFs get the specific message "Encrypted or password-protected PDFs aren't supported. Please upload an unprotected PDF." | P0 | `analysis/pdf-guard.ts` |
+
+### Security remediation P1 (approved by the owner, 2026-09-14)
+
+| ID | Decision | Where |
+|---|---|---|
+| SEC-D1 | Preview-only on Vercel with per-instance `/tmp` SQLite; documented that data may reset and isn't shared across instances. No hosted database. | `SECURITY.md`, `SETUP.md` |
+| SEC-D4 | Over-limit text/pages are rejected (`422 document_too_long`): resume > 100,000 characters, JD > 50,000, PDF > 20 pages (page count checked before text extraction). No silent truncation. Pasted JD over the limit moved from 400 to 422. | `analysis/extract.ts`, `routes/analyses.ts` |
+| SEC-D5b | At most 2 concurrent scrypt operations; 5 s wait, then `503 server_busy` + `Retry-After: 5`. scrypt parameters unchanged. | `security/password-slots.ts` |
+| SEC-D6 | Guest free-use marker kept 365 days, unclaimed guest results 30 days, claimed content deleted on transfer, account deletion is a hard delete; purged on normal guest requests. | `security/guest.ts`, migration 3 |
+| SEC-D7 | Sessions table with a `jti` per session: logout revokes the current session, logout-all and password change revoke all, email change revokes others and reissues the current one, Google takeover revokes the account's sessions. | `security/session.ts`, `middleware/auth.ts`, migration 3 |
+| SEC-D8 | 5 failed logins per account per 15 min (HMAC email key, identical for unknown emails), 60 assistant requests per user per hour; existing IP limits kept. | `security/fixed-window.ts`, `routes/auth.ts`, `routes/assistant.ts` |
+| SEC-D9 | Gemini kept on for the preview: 20 answers/user and 500/global per UTC day reserved before the call (retry = same unit, rejected output still counts), silent rules fallback, mandatory contact-detail redaction, JSON payload with an untrusted-data instruction, output validation (STOP, ≤ 4,000 chars, no links, numbers, ratings, quotes), exact Assistant disclosure. | `assistant/*.ts`, `AssistantPage.tsx`, migration 3 |
+| SEC-M8 | `NODE_ENV=production` and the Vercel production deployment refuse to start without `JWT_SECRET`. | `config.ts` |
+| SEC-A1 | Architecture test: every prepared statement that reads, updates or deletes an owned table filters by its owner column (explicit allow-list for retention cleanup and token lookups). | `server/tests/ownership-queries.test.ts` |
+| D-43 | ~~Email change keeps the current session~~ → changed by SEC-D7: other devices are signed out, the current session is reissued. | |
+| D-44 | ~~Guest results kept until claimed~~ → changed by SEC-D6. | |
+
+### Security remediation P2 and P3 (2026-09-15)
+
+| ID | Decision | Where |
+|---|---|---|
+| SEC-D8b | Auth IP limiter split per route with the approved values: login 20/15 min, sign-up 5/h, verification + resend 10/15 min (shared), Google 20/15 min; profile/password/deletion keep the former 10/15 min; api 300/15 min, analysis 30/h, assistant 60/h unchanged | `middleware/security.ts` |
+| SEC-D10 | Sign-up gives the same 201 for new and existing addresses; verified owners get a notice email, unverified ones their verification link (cooldown applies); existing accounts are never changed | `routes/auth.ts`, `email/mailer.ts` |
+| SEC-D11 | 20 s parse deadline per upload request (the roadmap's D-11 value). Implemented as a **worker thread** that is terminated at the deadline, with `@napi-rs/canvas` replaced by an inert placeholder inside the worker (native addon + terminate crashed the process), and **one** worker per instance (two workers exceeded 1024 MB). In-process fallback with a reason code if the worker can't start | `analysis/document-parser.ts`, `analysis/parse-worker.ts`, `analysis/canvas-placeholder.cjs` |
+| SEC-L4 | Production `/api/health` returns only `{status}` | `app.ts` |
+| SEC-L5 | Logs carry reason codes/error classes only (no messages that could contain emails, document text or token details) | `app.ts`, `extract.ts`, `auth.ts`, `account.ts`, `google.ts`, `email-check.ts` |
+| SEC-L6 | `npm run audit` (`--audit-level=high`) plus a GitHub Actions workflow running audit, typecheck, tests and build | `package.json`, `.github/workflows/security.yml` |
+| SEC-CSP | `style-src` without `'unsafe-inline'`; Radix ScrollArea's style allowed by SHA-256 hash (server and vercel.json) | `middleware/security.ts`, `vercel.json` |
+| SEC-P3 | RAG security guardrails written as a design document only; RAG is not implemented | `docs/RAG-SECURITY.md` |

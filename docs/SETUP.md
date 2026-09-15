@@ -42,7 +42,7 @@ Copy `.env.example` to `.env`. Every variable is optional in development.
 | `API_PORT` | `4000` | API port in development; Vite reads it for the proxy |
 | `PORT` | — | Used instead of `API_PORT` when `NODE_ENV=production` (hosting platforms inject it) |
 | `APP_ORIGIN` | `http://localhost:5173` | Public URL of the app; used by the CSRF origin check |
-| `JWT_SECRET` | auto (dev only) | **Required in production**, at least 32 characters |
+| `JWT_SECRET` | auto (dev only) | **Required in production**, at least 32 characters. The Vercel **production** deployment refuses to start without it; preview deployments fall back to a per-instance secret |
 | `SESSION_TTL_HOURS` | `168` | Session cookie lifetime |
 | `DATABASE_PATH` | `server/data/skill2hire.db` | SQLite file |
 | `TRUST_PROXY` | `false` | Set `true` behind a reverse proxy so rate limits see real client IPs |
@@ -122,10 +122,15 @@ The repo deploys to Vercel as a static Vite site plus one serverless function:
 
 - `vercel.json` builds with `vite build` into `dist/` and rewrites `/api/*` to `api/index.ts`, which exports the Express app.
 - When `VERCEL` is set, the server automatically:
-  - stores SQLite at `/tmp/skill2hire.db`. **This is temporary:** accounts and analyses reset whenever Vercel recycles the function instance (after idle periods or on redeploy);
+  - stores SQLite at `/tmp/skill2hire.db`. **This is temporary:** accounts, analyses, sessions, guest markers and Gemini quotas reset whenever Vercel recycles the function instance (after idle periods or on redeploy), and each instance has its own copy, so data isn't guaranteed to persist or be shared across requests (preview only, D-1);
   - trusts the Vercel proxy (`TRUST_PROXY=true`) so rate limits and the CSRF origin check see the real client;
-  - uses a per-instance random session secret if `JWT_SECRET` isn't set;
-  - limits uploads to **4 MB**, because Vercel rejects request bodies over 4.5 MB.
+  - on **preview** deployments, uses a per-instance random session secret if `JWT_SECRET` isn't set. The
+    **production** deployment refuses to start without `JWT_SECRET` (security remediation P1), so set it in the
+    Vercel project's Production environment variables before deploying `main`;
+  - limits uploads to **4 MB**, because Vercel rejects request bodies over 4.5 MB;
+  - parses documents in a worker thread with a 20 s deadline (P2). If the preview logs show
+    `[parse] worker unavailable: <reason>`, the worker file wasn't bundled and parsing runs on the main thread without
+    the ability to stop a slow document.
 - The frontend shows a yellow "Preview build" banner on Vercel builds only.
 
 For persistent data on Vercel, move to a hosted database (Turso/libSQL or Neon Postgres) and set `JWT_SECRET` in

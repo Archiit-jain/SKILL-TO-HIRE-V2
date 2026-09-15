@@ -53,27 +53,49 @@ if (!parsed.success) {
 }
 const env = parsed.data;
 
+export class MissingJwtSecretError extends Error {}
+
+export interface JwtSecretContext {
+  jwtSecret?: string;
+  nodeEnv: "development" | "production" | "test";
+  onVercel: boolean;
+  /** Vercel's VERCEL_ENV: "production", "preview" or "development". */
+  vercelEnv?: string;
+}
+
 /**
- * Production must supply JWT_SECRET. In development a random secret is generated once and kept in
- * server/data so sessions survive `tsx watch` restarts. Tests get a fresh in-memory secret.
+ * Production must supply JWT_SECRET, including the Vercel production deployment (security remediation P1, M-8): a
+ * missing secret stops start-up. Vercel preview deployments may still use a per-instance secret, which matches their
+ * per-instance /tmp database. In development a random secret is generated once and kept in server/data so sessions
+ * survive `tsx watch` restarts. Tests get a fresh in-memory secret.
  */
-function resolveJwtSecret(): string {
-  if (env.JWT_SECRET) return env.JWT_SECRET;
-  if (ON_VERCEL) {
-    // Preview deployments without a configured secret: a per-instance secret matches the per-instance /tmp database.
-    // Set JWT_SECRET in the Vercel project settings once a persistent database is added.
+export function resolveJwtSecret(ctx: JwtSecretContext): string {
+  if (ctx.jwtSecret) return ctx.jwtSecret;
+  if (ctx.onVercel && ctx.vercelEnv === "production") {
+    throw new MissingJwtSecretError("JWT_SECRET is required on the Vercel production deployment (min 32 chars). See docs/SETUP.md.");
+  }
+  if (ctx.onVercel) {
     console.warn("[config] JWT_SECRET not set; using an ephemeral per-instance secret (sessions reset with the instance)");
     return randomBytes(48).toString("hex");
   }
-  if (env.NODE_ENV === "production") {
-    console.error("JWT_SECRET is required in production (min 32 chars). See docs/SETUP.md.");
-    process.exit(1);
+  if (ctx.nodeEnv === "production") {
+    throw new MissingJwtSecretError("JWT_SECRET is required in production (min 32 chars). See docs/SETUP.md.");
   }
-  if (env.NODE_ENV === "test") return randomBytes(48).toString("hex");
+  if (ctx.nodeEnv === "test") return randomBytes(48).toString("hex");
   const file = path.join(SERVER_ROOT, "data", ".dev-jwt-secret");
   mkdirSync(path.dirname(file), { recursive: true });
   if (!existsSync(file)) writeFileSync(file, randomBytes(48).toString("hex"), { mode: 0o600 });
   return readFileSync(file, "utf8").trim();
+}
+
+function jwtSecretOrExit(): string {
+  try {
+    return resolveJwtSecret({ jwtSecret: env.JWT_SECRET, nodeEnv: env.NODE_ENV, onVercel: ON_VERCEL, vercelEnv: process.env.VERCEL_ENV });
+  } catch (err) {
+    if (!(err instanceof MissingJwtSecretError)) throw err;
+    console.error(err.message);
+    process.exit(1);
+  }
 }
 
 export const config = {
@@ -85,7 +107,7 @@ export const config = {
   host: env.HOST,
   appOrigin: env.APP_ORIGIN.replace(/\/$/, ""),
   databasePath: env.NODE_ENV === "test" ? ":memory:" : env.DATABASE_PATH,
-  jwtSecret: resolveJwtSecret(),
+  jwtSecret: jwtSecretOrExit(),
   sessionTtlSeconds: Math.round(env.SESSION_TTL_HOURS * 3600),
   trustProxy: env.TRUST_PROXY === "true",
   gemini:
@@ -93,9 +115,26 @@ export const config = {
   upload: {
     // 5MB matches the original UI. Vercel functions reject request bodies over 4.5MB, so the preview uses 4MB.
     maxBytes: (ON_VERCEL ? 4 : 5) * 1024 * 1024,
+    // D-4: PDFs with more pages are rejected (page count checked before any text is extracted).
     maxPdfPages: 20,
-    maxDocxUncompressedBytes: 50 * 1024 * 1024,
+    // Document safety caps (security remediation P0, owner decisions D-2 / D-3 / D-5). Checked before any parser runs.
+    // D-2: sum of all declared DOCX entry sizes.
+    maxDocxUncompressedBytes: 20 * 1024 * 1024,
+    // D-2: every part mammoth may read as XML (.xml/.rels and any relationship target), individually and in total.
+    maxDocxXmlPartBytes: 4 * 1024 * 1024,
+    maxDocxXmlTotalBytes: 4 * 1024 * 1024,
     maxZipEntries: 2000,
+    // D-3: decompressed size of one PDF Flate stream, and of all Flate streams in one PDF.
+    maxPdfStreamInflatedBytes: 10 * 1024 * 1024,
+    maxPdfTotalInflatedBytes: 30 * 1024 * 1024,
+    // D-5: documents parsed at the same time per server instance; extra requests get 503 with Retry-After.
+    maxConcurrentParses: 2,
+    busyRetryAfterSeconds: 5,
+    // D-11 (P2): all document extraction for one upload request must finish within this time; otherwise the parse
+    // worker is terminated and the request gets 422 file_too_complex. Leaves room for the rest of the request inside Vercel's
+    // 30 s function limit (two cap-sized PDFs parsed at once took 26-28 s locally in P0).
+    parseTimeoutMs: 20_000,
+    // D-4: resume text (after cleaning) longer than this is rejected, never truncated.
     maxExtractedChars: 100_000,
   },
   googleClientId: env.GOOGLE_CLIENT_ID ?? null,
@@ -105,7 +144,26 @@ export const config = {
       : null,
   emailVerificationTtlSeconds: Math.round(env.EMAIL_VERIFICATION_TTL_HOURS * 3600),
   emailDnsCheck: env.EMAIL_DNS_CHECK === "true" && env.NODE_ENV !== "test",
+  // Security remediation P1 (approved owner decisions).
+  security: {
+    // D-5: concurrent scrypt operations per instance, and how long a request waits for one before 503 server_busy.
+    maxConcurrentPasswordHashes: 2,
+    passwordHashWaitMs: 5_000,
+    passwordBusyRetryAfterSeconds: 5,
+    // D-8: failed logins per account and assistant requests per user, fixed windows, in memory per instance (D-1).
+    failedLoginsPerAccount: 5,
+    failedLoginWindowMs: 15 * 60_000,
+    assistantRequestsPerUser: 60,
+    assistantWindowMs: 60 * 60_000,
+    // D-6: unclaimed guest results are kept 30 days; the "free analysis used" marker 365 days.
+    guestAnalysisRetentionDays: 30,
+    guestFreeUseRetentionDays: 365,
+    // D-9: Gemini answers per user per UTC day, and across all users per UTC day.
+    geminiAnswersPerUserPerDay: 20,
+    geminiAnswersGlobalPerDay: 500,
+  },
   text: {
+    // D-4: pasted JD (trimmed) or JD file text (after cleaning) longer than this is rejected, never truncated.
     maxJdChars: 50_000,
     minResumeChars: 50,
     minJdChars: 50,

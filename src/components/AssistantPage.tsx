@@ -13,6 +13,10 @@ interface AssistantPageProps {
 
 const MAX_QUESTION_CHARS = 1000;
 
+/** Shown whenever the server reports Gemini phrasing is enabled (security remediation P1, D-9). */
+const GEMINI_DISCLOSURE =
+  "When AI phrasing is on, your question and the relevant analysis facts (with contact details removed) are sent to Google Gemini to word the answer. Scores and skill ratings always come from Skill2Hire's rules.";
+
 // crypto.randomUUID only exists in secure contexts (https or localhost).
 let counter = 0;
 const newId = () => globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${counter++}`;
@@ -51,6 +55,18 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [geminiOn, setGeminiOn] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .assistantStatus()
+      .then((s) => active && setGeminiOn(s.mode === "gemini"))
+      .catch(() => undefined); // status is informational; the rules assistant works either way
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -94,6 +110,11 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
         {analysisResult && (
           <p className="text-xs text-slate-400 mt-2">
             Answering from: {analysisResult.resumeName} vs {analysisResult.jdTitle}
+          </p>
+        )}
+        {geminiOn && (
+          <p className="text-xs text-slate-500 mt-2" data-testid="gemini-disclosure">
+            {GEMINI_DISCLOSURE}
           </p>
         )}
       </div>

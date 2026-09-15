@@ -1,10 +1,28 @@
 import mammoth from "mammoth";
 import { config } from "../config.js";
 import { HttpError } from "../http.js";
+import { checkDocx, UNSAFE_DOCUMENT_MESSAGE } from "./docx-guard.js";
+import { checkPdf } from "./pdf-guard.js";
 
 export type DocKind = "pdf" | "docx" | "txt";
 
 const EXT_KIND: Record<string, DocKind> = { ".pdf": "pdf", ".docx": "docx", ".txt": "txt" };
+
+// Security remediation P1 (D-4): documents over a limit are rejected, never silently truncated or partly read.
+export const RESUME_TOO_LONG_MESSAGE = "Your resume has more text than we can analyse (limit: 100,000 characters).";
+export const JD_TOO_LONG_MESSAGE = "The job description has more text than we can analyse (limit: 50,000 characters).";
+export const PDF_TOO_MANY_PAGES_MESSAGE = "This PDF has more than 20 pages. Please upload a shorter document.";
+
+export const documentTooLong = (message: string) => new HttpError(422, message, "document_too_long");
+
+/** D-11 (P2): the upload's parse deadline passed and parsing was stopped. Same public error as other safety limits. */
+export const parseDeadlineExceeded = () => new HttpError(422, UNSAFE_DOCUMENT_MESSAGE, "file_too_complex");
+
+/** Throws 422 document_too_long when `text` (already cleaned) is longer than `maxChars`. */
+export function assertTextWithinLimit(text: string, maxChars: number, message: string): string {
+  if (text.length > maxChars) throw documentTooLong(message);
+  return text;
+}
 
 /** Identify the file by its bytes, and require the extension to agree. Never trust the client MIME type. */
 export function detectKind(buffer: Buffer, filename: string, allowed: DocKind[]): DocKind {
@@ -23,37 +41,6 @@ export function detectKind(buffer: Buffer, filename: string, allowed: DocKind[])
   return claimed;
 }
 
-/** Reject zip bombs before mammoth inflates anything: sum declared uncompressed sizes from the central directory. */
-export function assertSafeZip(buf: Buffer) {
-  const minEocd = 22;
-  const searchStart = Math.max(0, buf.length - (minEocd + 0xffff));
-  let eocd = -1;
-  for (let i = buf.length - minEocd; i >= searchStart; i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) throw new HttpError(422, "Corrupt DOCX file", "file_corrupt");
-  const entries = buf.readUInt16LE(eocd + 10);
-  const cdOffset = buf.readUInt32LE(eocd + 16);
-  if (entries === 0xffff || cdOffset === 0xffffffff) throw new HttpError(422, "ZIP64 DOCX files are not supported", "file_corrupt");
-  if (entries > config.upload.maxZipEntries) throw new HttpError(422, "DOCX has too many parts", "file_too_complex");
-
-  let pos = cdOffset;
-  let total = 0;
-  for (let n = 0; n < entries; n++) {
-    if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) {
-      throw new HttpError(422, "Corrupt DOCX file", "file_corrupt");
-    }
-    total += buf.readUInt32LE(pos + 24);
-    if (total > config.upload.maxDocxUncompressedBytes) {
-      throw new HttpError(422, "DOCX expands to an unsafe size", "file_too_complex");
-    }
-    pos += 46 + buf.readUInt16LE(pos + 28) + buf.readUInt16LE(pos + 30) + buf.readUInt16LE(pos + 32);
-  }
-}
-
 export function normalizeText(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")
@@ -61,8 +48,7 @@ export function normalizeText(text: string): string {
     .replace(/[\u2022\u25CF\u25AA\u2023\u2043\uF0B7]/g, "\n• ")
     .replace(/[ \t\u00A0]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
-    .trim()
-    .slice(0, config.upload.maxExtractedChars);
+    .trim();
 }
 
 export async function extractText(buffer: Buffer, filename: string, allowed: DocKind[]): Promise<string> {
@@ -70,6 +56,7 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
   let raw: string;
   try {
     if (kind === "pdf") {
+      await checkPdf(buffer); // encryption, filter policy and inflated-size caps (before pdf.js is even loaded)
       // Loaded lazily so a PDF-library problem can only break PDF parsing, never the whole API.
       await import("./pdf-polyfill.js");
       const { PDFParse } = await import("pdf-parse");
@@ -78,21 +65,26 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
       PDFParse.setWorker(getData());
       const parser = new PDFParse({ data: new Uint8Array(buffer), isEvalSupported: false, verbosity: 0 });
       try {
-        const result = await parser.getText({ first: config.upload.maxPdfPages });
+        // pdf-parse 2.4.5: getInfo() loads the document and reports doc.numPages without extracting any page text;
+        // getText() then reuses the same loaded document and reads every page.
+        const { total } = await parser.getInfo();
+        if (total > config.upload.maxPdfPages) throw documentTooLong(PDF_TOO_MANY_PAGES_MESSAGE);
+        const result = await parser.getText();
         raw = result.text;
       } finally {
         await parser.destroy();
       }
     } else if (kind === "docx") {
-      assertSafeZip(buffer);
+      checkDocx(buffer); // structure, declared + real sizes, relationship-aware XML caps, DTD (before mammoth)
       raw = (await mammoth.extractRawText({ buffer })).value;
     } else {
       raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
     }
   } catch (err) {
     if (err instanceof HttpError) throw err;
-    // Log the parser's real reason server-side only; the client gets a generic message.
-    console.warn(`[extract] ${kind} parse failed:`, (err as Error)?.message ?? err);
+    // Only the document kind and the error class are logged (P2 log hardening): library messages can quote document
+    // content or internal paths.
+    console.warn(`[extract] ${kind} parse failed: ${(err as Error)?.name ?? "error"}`);
     throw new HttpError(422, `Could not read ${kind.toUpperCase()} file. Is it corrupt or password-protected?`, "file_corrupt");
   }
   // pdf-parse inserts "-- 1 of 3 --" page markers

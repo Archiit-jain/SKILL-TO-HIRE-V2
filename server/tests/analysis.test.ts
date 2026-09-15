@@ -3,14 +3,15 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { analyze, extractRequirements } from "../src/analysis/analyze.js";
-import { assertSafeZip, detectKind, extractText } from "../src/analysis/extract.js";
+import { checkDocx } from "../src/analysis/docx-guard.js";
+import { detectKind, extractText } from "../src/analysis/extract.js";
 import { anonymiseFilename, redactPII, safeFilename } from "../src/analysis/redact.js";
 import { headingOf, splitSections } from "../src/analysis/sections.js";
 import { guessJobTitle, highestDegree, monthsFromDateRanges, requiredDegree, requiredYears } from "../src/analysis/signals.js";
 import { findSkills } from "../src/analysis/skills.js";
 import { answerFromAnalysis } from "../src/assistant/engine.js";
 import { thinkingConfigFor } from "../src/assistant/gemini.js";
-import { makePdf, SAMPLE_JD, SAMPLE_RESUME } from "./fixtures.js";
+import { makeDocx, makePdf, SAMPLE_JD, SAMPLE_RESUME } from "./fixtures.js";
 
 const NOW = new Date("2026-09-13T00:00:00Z");
 
@@ -162,16 +163,9 @@ describe("file handling", () => {
   });
 
   it("rejects zip bombs by declared size", () => {
-    // Local header + one central directory entry claiming 4GB uncompressed + EOCD
-    const cd = Buffer.alloc(46);
-    cd.writeUInt32LE(0x02014b50, 0);
-    cd.writeUInt32LE(0xfffffff0, 24);
-    const eocd = Buffer.alloc(22);
-    eocd.writeUInt32LE(0x06054b50, 0);
-    eocd.writeUInt16LE(1, 10);
-    eocd.writeUInt32LE(4, 16);
-    const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), cd, eocd]);
-    assert.throws(() => assertSafeZip(zip), /unsafe size/);
+    // An entry claiming 30 MB uncompressed pushes the declared archive total over the approved 20 MB cap (D-2).
+    const zip = makeDocx(SAMPLE_RESUME, [{ name: "word/media/huge.png", data: "x", declaredSize: 30 * 1024 * 1024 }]);
+    assert.throws(() => checkDocx(zip), { status: 422, code: "file_too_complex", message: /too large or complex/ });
   });
 
   it("sanitises filenames and PII", () => {
