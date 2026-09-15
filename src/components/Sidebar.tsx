@@ -1,19 +1,21 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Page, User } from "@/types";
+import type { Page, User } from "@/types";
 import {
-  Home,
-  FileText,
-  Target,
-  MessageSquare,
   BookOpen,
-  TrendingUp,
-  Settings,
-  LogOut,
-  LogIn,
+  ChevronsLeft,
+  ChevronsRight,
+  FileText,
+  Home,
   Lock,
-  Shield,
+  LogIn,
+  LogOut,
+  MessageSquare,
+  Settings,
   Sparkles,
+  Target,
+  TrendingUp,
+  X,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -25,35 +27,78 @@ interface SidebarProps {
   onSignIn: () => void;
   /** Pages that need an account; shown with a lock for guests. */
   lockedPages: ReadonlySet<Page>;
+  /**
+   * "static": desktop (always full width) and tablet (icon rail that can be expanded).
+   * "drawer": the mobile menu, always full width with a close button.
+   */
+  variant?: "static" | "drawer";
+  /** Tablet only: the rail is expanded to full width. */
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
+  onClose?: () => void;
 }
 
-const navItems = [
-  { page: "home" as Page, label: "Home", icon: Home },
-  { page: "analysis" as Page, label: "New Analysis", icon: FileText },
-  { page: "results" as Page, label: "Results", icon: Target },
-  { page: "assistant" as Page, label: "Career Assistant", icon: MessageSquare },
-  { page: "roadmap" as Page, label: "Career Roadmap", icon: BookOpen },
-  { page: "progress" as Page, label: "Progress", icon: TrendingUp },
-  { page: "settings" as Page, label: "Settings", icon: Settings },
+export const NAV_ITEMS: Array<{ page: Page; label: string; icon: typeof Home }> = [
+  { page: "home", label: "Home", icon: Home },
+  { page: "analysis", label: "New Analysis", icon: FileText },
+  { page: "results", label: "Results", icon: Target },
+  { page: "assistant", label: "Career Assistant", icon: MessageSquare },
+  { page: "roadmap", label: "Career Roadmap", icon: BookOpen },
+  { page: "progress", label: "Progress", icon: TrendingUp },
+  { page: "settings", label: "Settings", icon: Settings },
 ];
 
-export function Sidebar({ currentPage, onNavigate, user, onLogout, onSignIn, lockedPages }: SidebarProps) {
+export function Logo({ compact = false }: { compact?: boolean }) {
   return (
-    <aside className="w-64 bg-slate-900 text-white flex flex-col shrink-0">
-      <div className="p-6 border-b border-slate-800">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-cyan-500 rounded-lg flex items-center justify-center">
-            <Sparkles className="w-4 h-4" />
-          </div>
-          <div>
-            <h1 className="font-bold text-lg leading-tight">Skill2Hire</h1>
-            <p className="text-xs text-slate-400">Career Intelligence</p>
-          </div>
-        </div>
+    <div className="flex items-center gap-2">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan-500">
+        <Sparkles className="h-4 w-4" aria-hidden="true" />
+      </div>
+      <div className={compact ? "hidden lg:block" : ""}>
+        <p className="text-lg font-bold leading-tight">Skill2Hire</p>
+        <p className="text-xs text-slate-400">Career Intelligence</p>
+      </div>
+    </div>
+  );
+}
+
+export function Sidebar({
+  currentPage,
+  onNavigate,
+  user,
+  onLogout,
+  onSignIn,
+  lockedPages,
+  variant = "static",
+  expanded = false,
+  onToggleExpanded,
+  onClose,
+}: SidebarProps) {
+  const drawer = variant === "drawer";
+  // On tablets the rail shows icons only unless expanded; desktops and the mobile drawer always show labels.
+  const full = drawer || expanded;
+  const label = full ? "" : "hidden lg:inline";
+  const block = full ? "" : "hidden lg:block";
+
+  return (
+    <aside
+      className={cn(
+        "flex h-full shrink-0 flex-col bg-slate-900 text-white",
+        drawer ? "w-72" : full ? "w-64" : "w-16 lg:w-64"
+      )}
+      aria-label="Main navigation"
+    >
+      <div className={cn("flex items-center justify-between gap-2 border-b border-slate-800", full ? "p-5" : "p-4 lg:p-5")}>
+        <Logo compact={!full} />
+        {drawer && (
+          <Button variant="ghost" size="icon" className="text-slate-300 hover:bg-slate-800 hover:text-white" aria-label="Close menu" onClick={onClose} autoFocus>
+            <X className="h-5 w-5" />
+          </Button>
+        )}
       </div>
 
-      <nav className="flex-1 p-4 space-y-1">
-        {navItems.map((item) => {
+      <nav className={cn("flex-1 space-y-1 overflow-y-auto", full ? "p-4" : "p-2 lg:p-4")}>
+        {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const isActive = currentPage === item.page;
           const locked = !user && lockedPages.has(item.page);
@@ -61,57 +106,72 @@ export function Sidebar({ currentPage, onNavigate, user, onLogout, onSignIn, loc
             <Button
               key={item.page}
               variant="ghost"
+              aria-current={isActive ? "page" : undefined}
+              aria-label={full ? undefined : item.label}
+              title={locked ? `${item.label} - log in to use this` : full ? undefined : item.label}
               className={cn(
-                "w-full justify-start text-slate-300 hover:text-white hover:bg-slate-800",
+                "w-full text-slate-300 hover:bg-slate-800 hover:text-white",
+                full ? "justify-start" : "justify-center px-0 lg:justify-start lg:px-4",
                 isActive && "bg-slate-800 text-white",
                 locked && "text-slate-500"
               )}
               onClick={() => onNavigate(item.page)}
-              title={locked ? "Log in to use this" : undefined}
             >
-              <Icon className="w-4 h-4 mr-3" />
-              {item.label}
-              {locked && <Lock className="w-3 h-3 ml-auto" aria-label="Requires login" />}
+              <Icon className={cn("h-4 w-4 shrink-0", full ? "mr-3" : "lg:mr-3")} aria-hidden="true" />
+              <span className={label}>{item.label}</span>
+              {locked && <Lock className={cn("ml-auto h-3 w-3", full ? "" : "hidden lg:block")} aria-label="Requires login" />}
             </Button>
           );
         })}
       </nav>
 
-      <div className="p-4 border-t border-slate-800 space-y-3">
+      <div className={cn("space-y-3 border-t border-slate-800", full ? "p-4" : "p-2 lg:p-4")}>
         {user ? (
           <>
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-slate-700 rounded-full flex items-center justify-center text-sm font-semibold">
+            <div className={cn("flex items-center gap-3", !full && "justify-center lg:justify-start")}>
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-700 text-sm font-semibold" title={full ? undefined : user.name}>
                 {user.name.charAt(0).toUpperCase()}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{user.name}</p>
-                <p className="text-xs text-slate-400 truncate">{user.email}</p>
+              <div className={cn("min-w-0 flex-1", block)}>
+                <p className="truncate text-sm font-medium">{user.name}</p>
+                <p className="truncate text-xs text-slate-400">{user.email}</p>
               </div>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <Shield className="w-3 h-3" />
-              <span>Privacy Protected</span>
             </div>
             <Button
               variant="ghost"
-              className="w-full justify-start text-slate-300 hover:text-white hover:bg-slate-800"
+              aria-label={full ? undefined : "Log out"}
+              title={full ? undefined : "Log out"}
+              className={cn("w-full text-slate-300 hover:bg-slate-800 hover:text-white", full ? "justify-start" : "justify-center px-0 lg:justify-start lg:px-4")}
               onClick={onLogout}
             >
-              <LogOut className="w-4 h-4 mr-3" />
-              Logout
+              <LogOut className={cn("h-4 w-4 shrink-0", full ? "mr-3" : "lg:mr-3")} aria-hidden="true" />
+              <span className={label}>Log out</span>
             </Button>
           </>
         ) : (
           <>
-            <p className="text-xs text-slate-400">
-              You're using Skill2Hire as a guest. Log in to save results and run more analyses.
-            </p>
-            <Button className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-900" onClick={onSignIn}>
-              <LogIn className="w-4 h-4 mr-2" />
-              Log in / Sign up
+            <p className={cn("text-xs text-slate-400", block)}>You're using Skill2Hire as a guest. Log in to save results and run more analyses.</p>
+            <Button
+              aria-label={full ? undefined : "Log in or sign up"}
+              title={full ? undefined : "Log in or sign up"}
+              className={cn("w-full bg-cyan-500 text-slate-900 hover:bg-cyan-400", !full && "px-0 lg:px-4")}
+              onClick={onSignIn}
+            >
+              <LogIn className={cn("h-4 w-4 shrink-0", full ? "mr-2" : "lg:mr-2")} aria-hidden="true" />
+              <span className={label}>Log in / Sign up</span>
             </Button>
           </>
+        )}
+        {variant === "static" && onToggleExpanded && (
+          <Button
+            variant="ghost"
+            className="w-full justify-center text-slate-400 hover:bg-slate-800 hover:text-white lg:hidden"
+            aria-label={expanded ? "Collapse menu" : "Expand menu"}
+            aria-expanded={expanded}
+            onClick={onToggleExpanded}
+          >
+            {expanded ? <ChevronsLeft className="h-4 w-4" /> : <ChevronsRight className="h-4 w-4" />}
+          </Button>
         )}
       </div>
     </aside>

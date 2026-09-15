@@ -11,6 +11,15 @@
 | 7 | [DECISIONS.md](DECISIONS.md) | Decisions taken, and the **PENDING APPROVAL** / **OPEN DECISION** list |
 | 8 | [CHANGELOG.md](CHANGELOG.md) | What was changed from the original frontend-only code |
 
+## Project status (2026-09-15, hackathon release)
+
+- Branch `feature/hackathon-release`: persistent storage on libSQL/Turso, analysis engine 2.0 (structured JD
+  requirements, evidence with reasons and confidence, no false skill equivalence, score breakdown, prioritised
+  recommendations, roadmap), a live synthetic sample analysis, and a responsive redesign of the main pages.
+- Verified: 276/276 automated tests, type-check, production build, `npm audit` (0 vulnerabilities), a browser run of the
+  guest journey at desktop, tablet and mobile widths, and an API-level journey test for the signed-in flow.
+- Not verified: a real Turso database (no credentials), Gemini against the real API, accuracy on real resumes.
+
 ## Project status (2026-09-13)
 
 - Original input: a React/TypeScript frontend (`src/`) with no build config, no UI component files and only

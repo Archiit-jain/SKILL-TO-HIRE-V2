@@ -68,6 +68,10 @@ export const api = {
   getAnalysis: (id: string) => request<{ result: AnalysisResult }>(`/analyses/${encodeURIComponent(id)}`),
   deleteAnalysis: (id: string) => request<void>(`/analyses/${encodeURIComponent(id)}`, json("DELETE")),
 
+  demoAnalysis: () => request<{ result: AnalysisResult }>("/demo/analysis"),
+  demoChat: (question: string) =>
+    request<Omit<ChatMessage, "id" | "role"> & { mode: "rules" }>("/demo/assistant", json("POST", { question })),
+
   assistantStatus: () => request<{ mode: "rules" | "gemini" }>("/assistant/status"),
   chat: (question: string, analysisId?: string) =>
     request<Omit<ChatMessage, "id" | "role"> & { mode: "rules" | "gemini" }>(

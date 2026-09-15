@@ -27,14 +27,43 @@ export interface UserSettings {
   notifications: boolean;
 }
 
+// ---- Analysis result: mirrors server/src/analysis/types.ts ------------------------------------------------------------
+// Fields added in engine 2.0 are optional here, because analyses saved by engine 1.0 don't have them.
+
+export type SkillLevel = "strong" | "partial" | "missing";
+export type RequirementType = "required" | "preferred";
+export type Confidence = "high" | "medium" | "low";
+
+export interface JdRequirement {
+  id: string;
+  kind: "skill" | "experience" | "education" | "certification";
+  label: string;
+  category: string;
+  requirementType: RequirementType;
+  jdEvidence: string;
+  typeReason: string;
+  confidence: Confidence;
+}
+
+export interface RelatedEvidence {
+  skill: string;
+  section: string;
+  evidence: string;
+  note: string;
+}
+
 export interface SkillStatus {
   skill: string;
-  status: "strong" | "partial" | "missing";
-  requirementType: "required" | "preferred";
+  status: SkillLevel;
+  requirementType: RequirementType;
   evidence?: string;
-  similarityScore?: number;
   section?: string;
   importanceWeight: number;
+  category?: string;
+  jdEvidence?: string;
+  reason?: string;
+  confidence?: Confidence;
+  related?: RelatedEvidence[];
 }
 
 export interface ScoreComponent {
@@ -42,6 +71,45 @@ export interface ScoreComponent {
   score: number;
   weight: number;
   description: string;
+  key?: "skills" | "wording" | "experience" | "education" | "projects" | "certifications";
+  contribution?: number;
+  confidence?: Confidence;
+}
+
+export type RecommendationGroup = "required-missing" | "required-partial" | "preferred-missing" | "preferred-partial" | "other";
+
+export interface Recommendation {
+  priority: number;
+  kind: "skill" | "experience" | "education" | "certification";
+  target: string;
+  requirementType: RequirementType;
+  group: RecommendationGroup;
+  whyItMatters: string;
+  jdEvidence: string;
+  currentEvidence: string | null;
+  gap: string;
+  action: string;
+  evidenceToAdd: string;
+  impactPoints: number;
+  impactNote: string;
+}
+
+export type RoadmapGroup = "required-missing" | "required-partial" | "preferred-missing" | "preferred-partial" | "maintain";
+
+export interface RoadmapStep {
+  phase: "learn" | "build" | "demonstrate" | "document" | "reanalyze";
+  text: string;
+}
+
+export interface RoadmapItem {
+  order: number;
+  skill: string;
+  status: SkillLevel;
+  requirementType: RequirementType;
+  group: RoadmapGroup;
+  prerequisites: string[];
+  movedEarlierFor?: string;
+  steps: RoadmapStep[];
 }
 
 export interface AnalysisResult {
@@ -63,6 +131,12 @@ export interface AnalysisResult {
   jdTitle: string;
   analyzedAt: string;
   engineVersion: string;
+  requirements?: JdRequirement[];
+  confidence?: { level: Confidence; reasons: string[] };
+  recommendations?: Recommendation[];
+  roadmap?: RoadmapItem[];
+  /** The built-in sample analysis (synthetic documents, never stored). */
+  demo?: boolean;
 }
 
 export interface ChatMessage {
@@ -70,15 +144,6 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources?: string[];
-}
-
-export interface RoadmapItem {
-  skill: string;
-  status: "strong" | "partial" | "missing";
-  action: string;
-  priority: "high" | "medium" | "low";
-  stage: number;
-  resource?: string;
 }
 
 export interface ProgressEntry {

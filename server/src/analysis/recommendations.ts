@@ -106,7 +106,7 @@ export function buildRecommendations(input: RecommendationInput): Recommendation
             ? `Learn ${s.skill}, then ${practiceFor(s.skill)}.`
             : `Find a chance to ${practiceFor(s.skill)}.`,
         evidenceToAdd: technical
-          ? `A Projects or Experience bullet that names ${s.skill} and says what you built with it, e.g. "Built <what> using ${s.skill} to <result>".`
+          ? `A Projects or Experience bullet that names ${s.skill} and says what you did with it, e.g. "<Action verb> <what> with ${s.skill}, <result>".`
           : `An Experience or Projects bullet that shows ${s.skill} in action, e.g. "<situation> - <what you did> - <result>".`,
         impactPoints,
         impactNote: impactText(impactPoints, parts),

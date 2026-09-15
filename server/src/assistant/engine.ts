@@ -61,7 +61,7 @@ export function answerFromAnalysis(question: string, result: AnalysisResult | nu
 
   if (mentioned.length) {
     return {
-      content: mentioned.map((s) => describeSkill(s, recs.find((r) => r.kind === "skill" && r.target === s.skill))).join("\n\n---\n\n"),
+      content: mentioned.map((s) => describeSkill(s, recs.find((r) => r.kind === "skill" && r.target === s.skill))).join("\n\n\n"),
       sources: ["Skill Gap Analysis", "Resume Evidence", ...(mentioned.some((s) => s.jdEvidence) ? ["Job Description"] : [])],
       mode: "rules",
     };
@@ -93,7 +93,7 @@ export function answerFromAnalysis(question: string, result: AnalysisResult | nu
     if (recs.length) {
       return {
         content: `In priority order (required gaps first, then larger impact):\n\n${list(
-          recs.slice(0, 6).map((r) => `**${r.target}** - ${r.gap} ${r.action} _${r.impactNote}_`)
+          recs.slice(0, 6).map((r) => `**${r.target}** - ${r.gap} ${r.action} (${r.impactNote})`)
         )}`,
         sources: ["Why Not Me", "Scoring Weights"],
         mode: "rules",

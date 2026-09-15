@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Sidebar } from "@/components/Sidebar";
+import { Logo, Sidebar } from "@/components/Sidebar";
 import { HomePage } from "@/components/HomePage";
 import { AnalysisPage } from "@/components/AnalysisPage";
 import { ResultsPage } from "@/components/ResultsPage";
@@ -11,13 +11,16 @@ import { AuthPage } from "@/components/AuthPage";
 import { PreviewBanner } from "@/components/PreviewBanner";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
-import { AnalysisResult, Page } from "@/types";
-import { CheckCircle2, Loader2, Target, X, AlertCircle } from "lucide-react";
+import type { AnalysisResult, Page } from "@/types";
+import { AlertCircle, CheckCircle2, FlaskConical, Loader2, Menu, Target, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 /** Pages that need an account. Guests can use Home, one New Analysis, Results and the Roadmap. */
 const LOCKED_PAGES: ReadonlySet<Page> = new Set<Page>(["assistant", "progress", "settings"]);
+
+/** While the sample analysis is open, its rules-only assistant is available to guests too. */
+const SAMPLE_LOCKED_PAGES: ReadonlySet<Page> = new Set<Page>(["progress", "settings"]);
 
 const LOCKED_NOTICE: Partial<Record<Page, string>> = {
   assistant: "Log in to chat with the Career Assistant about your results.",
@@ -33,6 +36,9 @@ export default function App() {
     notice: null,
     mode: "login",
   });
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [railExpanded, setRailExpanded] = useState(false);
+  const [demoError, setDemoError] = useState<string | null>(null);
   const {
     user,
     loading,
@@ -62,10 +68,18 @@ export default function App() {
     if (verifyOutcome && !verifyOutcome.ok) setAuth({ open: true, notice: verifyOutcome.message, mode: "login" });
   }, [verifyOutcome]);
 
+  // The mobile menu closes with Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
+
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-900">
-        <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+      <div className="flex min-h-screen items-center justify-center bg-slate-900" aria-label="Loading">
+        <Loader2 className="h-8 w-8 animate-spin text-cyan-400" aria-hidden="true" />
       </div>
     );
   }
@@ -75,7 +89,7 @@ export default function App() {
   if (!user && auth.open) {
     return (
       <>
-        <PreviewBanner persistentStorage={providers.persistentStorage} className="fixed top-0 inset-x-0 z-50" />
+        <PreviewBanner persistentStorage={providers.persistentStorage} className="fixed inset-x-0 top-0 z-50" />
         <AuthPage
           key={auth.notice ?? "auth"}
           providers={providers}
@@ -93,13 +107,26 @@ export default function App() {
     );
   }
 
-  const handleAnalysisComplete = (result: AnalysisResult) => {
+  const showResult = (result: AnalysisResult) => {
     setAnalysisResult(result);
     setCurrentPage("results");
   };
 
+  const handleTryDemo = async () => {
+    setDemoError(null);
+    try {
+      const { result } = await api.demoAnalysis();
+      showResult(result);
+    } catch (err) {
+      setDemoError(err instanceof Error ? err.message : "The sample analysis couldn't be loaded.");
+    }
+  };
+
   const handleNavigate = (page: Page) => {
-    if (!user && LOCKED_PAGES.has(page)) {
+    setMenuOpen(false);
+    // The sample analysis has its own rules-only assistant, which guests may use.
+    const demoAssistant = page === "assistant" && !!analysisResult?.demo;
+    if (!user && LOCKED_PAGES.has(page) && !demoAssistant) {
       openAuth(LOCKED_NOTICE[page] ?? null);
       return;
     }
@@ -113,73 +140,120 @@ export default function App() {
 
   const handleOpenAnalysis = async (id: string) => {
     const { result } = await api.getAnalysis(id);
-    setAnalysisResult(result);
-    setCurrentPage("results");
+    showResult(result);
+  };
+
+  const sidebarProps = {
+    currentPage,
+    onNavigate: handleNavigate,
+    user,
+    onLogout: handleLogout,
+    onSignIn: () => {
+      setMenuOpen(false);
+      openAuth();
+    },
+    lockedPages: analysisResult?.demo ? SAMPLE_LOCKED_PAGES : LOCKED_PAGES,
   };
 
   return (
-    <div className="flex h-screen bg-slate-50">
-      <Sidebar
-        currentPage={currentPage}
-        onNavigate={handleNavigate}
-        user={user}
-        onLogout={handleLogout}
-        onSignIn={() => openAuth()}
-        lockedPages={LOCKED_PAGES}
-      />
-      <main className="flex-1 overflow-y-auto">
+    <div className="flex h-screen flex-col bg-slate-50 md:flex-row">
+      {/* Mobile top bar */}
+      <header className="flex h-14 shrink-0 items-center justify-between bg-slate-900 px-4 text-white md:hidden">
+        <Logo />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-slate-200 hover:bg-slate-800 hover:text-white"
+          aria-label="Open menu"
+          aria-expanded={menuOpen}
+          aria-controls="mobile-menu"
+          onClick={() => setMenuOpen(true)}
+        >
+          <Menu className="h-5 w-5" />
+        </Button>
+      </header>
+
+      {/* Mobile drawer */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Menu">
+          <button type="button" className="absolute inset-0 h-full w-full bg-slate-950/60" aria-label="Close menu" tabIndex={-1} onClick={() => setMenuOpen(false)} />
+          <div id="mobile-menu" className="absolute inset-y-0 left-0 shadow-2xl">
+            <Sidebar {...sidebarProps} variant="drawer" onClose={() => setMenuOpen(false)} />
+          </div>
+        </div>
+      )}
+
+      {/* Tablet rail / desktop sidebar */}
+      <div className="hidden md:flex">
+        <Sidebar {...sidebarProps} expanded={railExpanded} onToggleExpanded={() => setRailExpanded((v) => !v)} />
+      </div>
+
+      <main className="min-h-0 flex-1 overflow-y-auto">
         <PreviewBanner persistentStorage={providers.persistentStorage} className="sticky top-0 z-40" />
         {verifyOutcome?.ok && (
-          <div role="status" className="flex items-center gap-2 bg-emerald-50 text-emerald-800 text-sm px-6 py-3 border-b border-emerald-200">
-            <CheckCircle2 className="w-4 h-4" />
+          <div role="status" className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 sm:px-6">
+            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
             <span className="flex-1">{verifyOutcome.message}</span>
             <button type="button" aria-label="Dismiss" onClick={dismissVerifyOutcome}>
-              <X className="w-4 h-4" />
+              <X className="h-4 w-4" />
             </button>
           </div>
         )}
         {user && !user.emailVerified && (
-          <div role="note" className="flex items-center gap-2 bg-amber-50 text-amber-900 text-sm px-6 py-3 border-b border-amber-200">
-            <AlertCircle className="w-4 h-4" />
+          <div role="note" className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6">
+            <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
             Verify your new email address using the link we sent - you'll need it the next time you log in.
           </div>
         )}
+        {demoError && (
+          <div role="alert" className="flex items-center gap-2 border-b border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 sm:px-6">
+            <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="flex-1">{demoError}</span>
+            <button type="button" aria-label="Dismiss" onClick={() => setDemoError(null)}>
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
         {currentPage === "home" && (
-          <HomePage onNavigate={handleNavigate} hasAnalysis={!!analysisResult} isGuest={!user} />
+          <HomePage onNavigate={handleNavigate} onOpenDemo={showResult} hasAnalysis={!!analysisResult && !analysisResult.demo} isGuest={!user} />
         )}
         {currentPage === "analysis" && (
           <AnalysisPage
-            onAnalysisComplete={handleAnalysisComplete}
+            onAnalysisComplete={showResult}
             isGuest={!user}
             onLoginRequired={(message) => openAuth(message, "signup")}
+            onTryDemo={handleTryDemo}
           />
         )}
         {currentPage === "results" &&
           (analysisResult ? (
             <ResultsPage result={analysisResult} onNavigate={handleNavigate} isGuest={!user} onSignIn={() => openAuth(null, "signup")} />
           ) : (
-            <div className="max-w-4xl mx-auto px-8 py-8">
-              <Card className="bg-white border-slate-200 shadow-sm">
-                <CardContent className="p-12 text-center">
-                  <Target className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-                  <h3 className="text-lg font-semibold text-slate-900 mb-2">No Results Yet</h3>
-                  <p className="text-slate-600 mb-6">Run an analysis to see your match score and skill gaps.</p>
-                  <Button className="bg-slate-900 hover:bg-slate-800 text-white" onClick={() => handleNavigate("analysis")}>
-                    Start New Analysis
-                  </Button>
+            <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+              <Card className="border-slate-200 bg-white shadow-sm">
+                <CardContent className="p-8 text-center sm:p-12">
+                  <Target className="mx-auto mb-4 h-12 w-12 text-slate-300" aria-hidden="true" />
+                  <h1 className="mb-2 text-lg font-semibold text-slate-900">No results yet</h1>
+                  <p className="mb-6 text-slate-600">Run an analysis to see your match score and skill gaps, or look at the sample first.</p>
+                  <div className="flex flex-col justify-center gap-3 sm:flex-row">
+                    <Button className="bg-slate-900 text-white hover:bg-slate-800" onClick={() => handleNavigate("analysis")}>
+                      Start New Analysis
+                    </Button>
+                    <Button variant="outline" onClick={handleTryDemo}>
+                      <FlaskConical className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Try Demo Analysis
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             </div>
           ))}
-        {currentPage === "assistant" && user && (
-          <AssistantPage analysisResult={analysisResult} />
-        )}
-        {currentPage === "roadmap" && (
-          <RoadmapPage analysisResult={analysisResult} onNavigate={handleNavigate} />
-        )}
+        {currentPage === "assistant" && (user || analysisResult?.demo) && <AssistantPage key={analysisResult?.id ?? "none"} analysisResult={analysisResult} />}
+        {currentPage === "roadmap" && <RoadmapPage analysisResult={analysisResult} onNavigate={handleNavigate} />}
         {currentPage === "progress" && user && (
           <ProgressPage
             onOpenAnalysis={handleOpenAnalysis}
+            onNavigate={handleNavigate}
             onDeleted={(id) => {
               if (analysisResult?.id === id) setAnalysisResult(null);
             }}

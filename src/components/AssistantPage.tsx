@@ -57,7 +57,11 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [geminiOn, setGeminiOn] = useState(false);
 
+  const isDemo = !!analysisResult?.demo;
+
   useEffect(() => {
+    // The sample assistant is always rules-only, so there is no mode to ask about.
+    if (isDemo) return;
     let active = true;
     api
       .assistantStatus()
@@ -66,7 +70,7 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [isDemo]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -81,7 +85,7 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
     setIsTyping(true);
 
     try {
-      const reply = await api.chat(text, analysisResult?.id);
+      const reply = isDemo ? await api.demoChat(text) : await api.chat(text, analysisResult?.id);
       setMessages((prev) => [
         ...prev,
         { id: newId(), role: "assistant", content: reply.content, sources: reply.sources },
@@ -101,17 +105,25 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-8 py-8 h-full flex flex-col">
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8 h-full flex flex-col">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold text-slate-900">Career Assistant</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">Career Assistant</h1>
         <p className="text-slate-600 mt-1">
           Ask questions about your resume, target role, skill gaps, and improvement plan.
         </p>
         {analysisResult && (
-          <p className="text-xs text-slate-400 mt-2">
+          <p className="text-xs text-slate-500 mt-2">
             Answering from: {analysisResult.resumeName} vs {analysisResult.jdTitle}
           </p>
         )}
+        {isDemo && (
+          <p className="text-xs text-cyan-800 bg-cyan-50 border border-cyan-200 rounded-md px-3 py-2 mt-2">
+            Sample mode: answers come from Skill2Hire's rules about the synthetic sample analysis. Nothing you type is saved.
+          </p>
+        )}
+        <p className="text-xs text-slate-500 mt-2">
+          Answers are built from your analysis. The assistant can't change a score, a rating or the evidence.
+        </p>
         {geminiOn && (
           <p className="text-xs text-slate-500 mt-2" data-testid="gemini-disclosure">
             {GEMINI_DISCLOSURE}

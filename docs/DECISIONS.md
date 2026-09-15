@@ -44,7 +44,7 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | D-26 | Deployment target (Render, Railway, VPS, Docker…) and domain/HTTPS setup |
 | D-27 | Data retention period for stored analyses (currently kept until the user deletes them) |
 | D-28 | OCR for scanned PDFs (currently rejected with a clear message) |
-| D-29 | **Now more urgent:** with temporary storage, a verification link can fail ("invalid or expired") if Vercel recycled the instance between sign-up and the click, and accounts disappear. Persistent database for the Vercel deployment: the preview uses temporary `/tmp` SQLite (data resets). Options: Turso (libSQL, closest to SQLite), Neon Postgres, or hosting the API elsewhere (Render/Railway) with a disk. Requires a user-created account |
+| D-29 | **Resolved by HR-1 (hackathon release): Turso/libSQL.** Original note: with temporary storage, a verification link can fail ("invalid or expired") if Vercel recycled the instance between sign-up and the click, and accounts disappear. Persistent database for the Vercel deployment: the preview uses temporary `/tmp` SQLite (data resets). Options: Turso (libSQL, closest to SQLite), Neon Postgres, or hosting the API elsewhere (Render/Railway) with a disk. Requires a user-created account |
 
 ## Account & access decisions (2026-09-13, confirmed by user)
 
@@ -76,6 +76,28 @@ These were needed to make the app work. Each has alternatives; confirm or change
 |---|---|---|
 | D-30 | Teammate preview hosted on Vercel team `sillyguysolutions`, deployed from GitHub repo `Archiit-jain/SKILL-TO-HIRE-V2` (auto-deploy on push) | Chosen by user |
 | D-31 | On Vercel the upload limit is 4 MB (platform body limit 4.5 MB), versus 5 MB locally | PENDING APPROVAL (forced by platform) |
+
+## Hackathon release decisions (2026-09-15)
+
+Owner answers: persistence on **Turso / libSQL**; new branch `feature/hackathon-release` from `security/remediation`;
+commit and push the branch (no PR, no merge); a **tuned synthetic sample** run through the real engine for the demo.
+
+| ID | Decision | Where |
+|---|---|---|
+| HR-1 | `@libsql/client` 0.18.0 for all storage. Hosted Turso when `TURSO_DATABASE_URL` is set; local file otherwise; `:memory:` in tests. Supersedes SEC-D1 (preview-only `/tmp`) and D-04 (`node:sqlite`) | `server/src/db.ts`, `config.ts` |
+| HR-2 | Operations on one database are serialised per instance (the local driver can't run overlapping transactions); atomic sections use `db.transaction` | `db.ts` and callers |
+| HR-3 | `schema_version` table instead of `PRAGMA user_version` (not guaranteed on hosted libSQL); legacy files are seeded from `user_version` | `db.ts` |
+| HR-4 | Account deletion deletes child rows explicitly rather than relying on foreign-key enforcement of the connection | `routes/account.ts` |
+| HR-5 | The banner depends on the server's real storage state (`persistentStorage`), not on being built by Vercel | `PreviewBanner.tsx` |
+| HR-6 | Related-but-different skills never earn credit; they are shown as notes and in recommendations | `skills.ts` `RELATED` |
+| HR-7 | Confidence is categorical (high/medium/low) with stated rules; no numeric confidence or accuracy figures are invented | `analyze.ts`, `requirements.ts` |
+| HR-8 | A preferred experience/education/certification requirement uses the existing required 1 / preferred 0.5 weighting; the six base weights are unchanged | `analyze.ts`, `weights.ts` |
+| HR-9 | If the JD accepts equivalent experience and no qualifying degree is found, Education is not scored (it can't be verified from a resume) rather than scored 0 or given invented partial credit | `analyze.ts` |
+| HR-10 | Overall score is shown and stored as a whole number; component scores keep one decimal in the data; contributions are shown so the arithmetic can be followed | `analyze.ts`, `ResultsPage.tsx` |
+| HR-11 | Recommendation impact = score points computed from this analysis's weights; Wording Similarity changes are excluded and the note says so | `recommendations.ts` |
+| HR-12 | Roadmap is generated on the server, ordered by requirement group with prerequisite pull-forward; no dates or durations | `roadmap.ts` |
+| HR-13 | Sample analysis: synthetic documents, fixed date 2026-03-01, computed per instance, never stored; its assistant is rules-only and shares the existing 60/h assistant IP limit (no new limit) | `demo.ts`, `routes/demo.ts` |
+| HR-14 | Authenticated browser flows are verified by an API-level journey test rather than by typing credentials into the browser | `journey.test.ts` |
 
 ## Security remediation decisions (approved by the owner, 2026-09-14)
 

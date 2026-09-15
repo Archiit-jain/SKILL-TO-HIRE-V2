@@ -21,19 +21,21 @@ Base path: `/api`. All responses are JSON and carry `Cache-Control: no-store`.
 | 429 | `rate_limited` | Rate limit exceeded (IP limits; 5 failed logins per account per 15 min; 60 assistant requests per user per hour). Per-account and per-user limits add `Retry-After`. The response is identical for known and unknown emails |
 | 500 | `internal` | Unexpected error (details only in the server log) |
 | 502 | `email_send_failed` | Account created but the verification email couldn't be sent |
-| 503 | `email_unavailable`, `google_unavailable`, `server_busy` | Email delivery / Google sign-in not configured on this server; all document parse slots on this instance are busy, or no password-hash slot freed up within 5 s (`"The server is busy. Please try again in a few seconds."`). Both carry `Retry-After: 5` |
+| 503 | `email_unavailable`, `google_unavailable`, `server_busy`, `database_unavailable` | `database_unavailable` (Vercel entry only): the hosted database couldn't be opened, retried on the next request. Email delivery / Google sign-in not configured on this server; all document parse slots on this instance are busy, or no password-hash slot freed up within 5 s (`"The server is busy. Please try again in a few seconds."`). Both carry `Retry-After: 5` |
 
 ---
 
 ## Health
 
-`GET /api/health` → `200 {"status":"ok"}` in production. Development and tests also return `assistant` ("rules"|"gemini") and `ephemeralStorage`.
+`GET /api/health` → `200 {"status":"ok"}` in production. Development and tests also return `assistant` ("rules"|"gemini") and `persistentStorage` (boolean).
 
 ## Auth
 
 ### `GET /api/auth/providers`
-→ `{"googleClientId": string|null, "emailSignup": boolean}`. Tells the UI whether to show the Google button and
-whether email sign-up is possible (false in production without SMTP).
+→ `{"googleClientId": string|null, "emailSignup": boolean, "persistentStorage": boolean}`. Tells the UI whether to show
+the Google button, whether email sign-up is possible (false in production without SMTP), and whether saved data
+persists. `persistentStorage` is false for an in-memory database and for the Vercel `/tmp` fallback used when
+`TURSO_DATABASE_URL` isn't set; the frontend then shows the "Temporary storage" banner.
 
 ### `POST /api/auth/signup` (rate limited: signup, 5 per hour per IP)
 Body `{name, email, password}`. Name is 1–80 chars without `<>` or control chars; email is valid and max 254 chars
@@ -118,22 +120,42 @@ Upload safety errors (security remediation P0; limits in `config.upload`):
 | 503 | `server_busy` | Two documents are already being parsed on this instance; retry after `Retry-After` seconds. Nothing is stored and a guest's free analysis is not used up |
 | 422 | `file_too_complex` | The request's documents weren't parsed within the 20 s parse deadline (P2, D-11); the parse was stopped. Generic safety message |
 
+`AnalysisResult` (engine `rules-tfidf-2.0`; field meanings in [SCORING.md](SCORING.md), types in `server/src/analysis/types.ts`):
+
 ```jsonc
 {
   "id": "uuid",
-  "overallScore": 63.0,
-  "components": [{"name":"Skill Match","score":71.4,"weight":0.35,"description":"..."}],
+  "overallScore": 63,                                   // whole number 0-100
+  "components": [{"key":"skills","name":"Skill Match","score":71.4,"weight":0.359,"contribution":25.6,
+                  "description":"...","confidence":"high"}],
   "notAssessed": ["Certifications - the job description does not mention certifications"],
-  "strongSkills":  [{"skill":"Python","status":"strong","requirementType":"required","evidence":"...","similarityScore":12,"section":"Experience","importanceWeight":1}],
+  "requirements": [{"id":"skill:Python","kind":"skill","label":"Python","category":"Programming language",
+                    "requirementType":"required","jdEvidence":"Strong Python and SQL skills",
+                    "typeReason":"Listed under \"Requirements\"","confidence":"high"}],
+  "strongSkills":  [{"skill":"Python","status":"strong","requirementType":"required","category":"Programming language",
+                     "evidence":"Developed a Python ETL pipeline ...","section":"Experience",
+                     "jdEvidence":"Strong Python and SQL skills","reason":"Used in your Experience section, ...",
+                     "confidence":"high","related":[],"importanceWeight":1}],
   "partialSkills": [...],
-  "missingSkills": [{"skill":"Kubernetes","status":"missing","requirementType":"required","importanceWeight":1}],
+  "missingSkills": [{"skill":"Kubernetes","status":"missing","reason":"Not found anywhere in your resume. ...",
+                     "related":[{"skill":"Docker","section":"Skills","evidence":"...","note":"Docker builds and runs containers; ..."}], ...}],
+  "confidence": {"level":"high","reasons":["..."]},
+  "recommendations": [{"priority":1,"kind":"skill","target":"Kubernetes","requirementType":"required",
+                       "group":"required-missing","whyItMatters":"...","jdEvidence":"...","currentEvidence":"...",
+                       "gap":"...","action":"...","evidenceToAdd":"...","impactPoints":5,"impactNote":"..."}],
+  "roadmap": [{"order":1,"skill":"Kubernetes","status":"missing","requirementType":"required","group":"required-missing",
+               "prerequisites":[],"steps":[{"phase":"learn","text":"..."},{"phase":"build","text":"..."}]}],
   "whyNotMe": {"strengths":[], "gaps":[], "weakSupport":[], "improvements":[]},
   "resumeName": "resume.pdf",
   "jdTitle": "Data Engineer",
   "analyzedAt": "2026-09-13T08:50:52.000Z",
-  "engineVersion": "rules-tfidf-1.0"
+  "engineVersion": "rules-tfidf-2.0"
 }
 ```
+
+Results saved by engine 1.0 are returned as stored: they lack `requirements`, `confidence`, `recommendations`,
+`roadmap`, the per-skill `reason`/`jdEvidence`/`confidence`/`related` and the component `key`/`contribution`/`confidence`,
+and they still carry `similarityScore`. Clients must treat those fields as optional.
 
 The remaining analysis routes require auth, except `/latest`.
 
@@ -159,6 +181,16 @@ Body `{question: string (1–1000), analysisId?: uuid}`. Without `analysisId` th
 and the Gemini wording passes validation against the stored facts; otherwise the deterministic answer is returned
 with `mode: "rules"` and no error.
 
+## Sample analysis (no auth)
+
+### `GET /api/demo/analysis`
+→ `200 {"result": AnalysisResult}` with `"demo": true`. The engine runs live on built-in synthetic documents with a
+fixed analysis date. Nothing is stored, no cookie is set, and a guest's free analysis is not used.
+
+### `POST /api/demo/assistant` (rate limited: assistant, shared with `/api/assistant/chat`)
+Body `{question: string (1–1000)}` → `200 {"content", "sources", "mode": "rules"}`. Rules answers about the sample only;
+Gemini is never called and no quota is used.
+
 ## Rate limits (per client IP)
 
 | Limiter | Window | Max requests | Applies to |
@@ -170,7 +202,7 @@ with `mode: "rules"` and no error.
 | google | 15 min | 20 | `POST /api/auth/google` |
 | account | 15 min | 10 | profile, password change, account deletion |
 | analysis | 60 min | 30 | `POST /api/analyses` |
-| assistant | 60 min | 60 | `POST /api/assistant/chat` |
+| assistant | 60 min | 60 | `POST /api/assistant/chat` and `POST /api/demo/assistant` together |
 
 These values are provisional; see [DECISIONS.md](DECISIONS.md). The auth limiter was split per route in P2 (D-8).
 The IP limiters are disabled when `NODE_ENV=test` unless a test enables them.

@@ -221,22 +221,7 @@ export function AuthPage({ providers, onLogin, onSignup, onGoogle, notice, initi
                   {error && (
                     <div role="alert" className="flex items-start gap-2 p-3 rounded-lg bg-rose-50 text-rose-700 text-sm">
                       <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                      <div>
-                        {error.message}
-                        {error.code === "email_unverified_exists" && (
-                          <button
-                            type="button"
-                            className="block mt-1 font-medium underline"
-                            onClick={() => {
-                              setPendingEmail(email.trim().toLowerCase());
-                              setError(null);
-                              resend(email.trim().toLowerCase());
-                            }}
-                          >
-                            Resend verification email
-                          </button>
-                        )}
-                      </div>
+                      <div>{error.message}</div>
                     </div>
                   )}
                   {emailSignupDisabled && (
@@ -330,7 +315,7 @@ export function AuthPage({ providers, onLogin, onSignup, onGoogle, notice, initi
 
             <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-400">
               <Shield className="w-3 h-3" />
-              Passwords are hashed and your data is never shared
+              Passwords are stored as salted hashes. Uploaded files are never stored.
             </div>
           </CardContent>
         </Card>
