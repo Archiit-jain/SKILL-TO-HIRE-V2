@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased — hackathon release (branch `feature/hackathon-release`)
+
+### Persistence
+- One async data layer on `@libsql/client`: hosted Turso database (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`), local
+  SQLite file in development, in-memory databases in tests. Replaces `node:sqlite` and the per-instance `/tmp`
+  database as the production path; `/tmp` remains only as a flagged fallback.
+- Atomic sections run in write transactions; `schema_version` table (existing databases seeded from `user_version`).
+- Account deletion removes child rows explicitly. `persistentStorage` in `/api/auth/providers` and dev `/api/health`.
+
+### Analysis engine 2.0 (`rules-tfidf-2.0`)
+- Structured JD requirements with source sentence, required/preferred reason and confidence; benefits sections ignored.
+- False equivalences removed from the taxonomy (GitHub, version control, containerization, JWT, Unix, bare Lambda);
+  related skills shown but never counted.
+- Per-skill reason, JD evidence, confidence (low for ambiguous English words) and related evidence.
+- "Semantic Similarity" renamed "Wording Similarity"; component contributions; whole-number overall score;
+  `similarityScore` ("% context") removed.
+- Education equivalence and in-progress degrees, preferred experience/education/certification weighting, courses
+  not counted as certifications, missing dates flagged.
+- Overall confidence with reasons; prioritised recommendations with impact from the scoring weights; server-side
+  roadmap with prerequisites and no dates. Rules assistant answers with this evidence; engine 1.0 results still work.
+
+### Sample analysis
+- `GET /api/demo/analysis` and rules-only `POST /api/demo/assistant` on synthetic documents, computed live.
+
+### Frontend
+- Homepage: accurate headline, live sample preview, specific "How it works", **Try Demo Analysis**, honest limits and
+  data-use copy.
+- New Analysis: readiness checklist, JD character counter and minimum, accurate limits, elapsed-time loading state.
+- Results: score with required-skill coverage and confidence, critical gaps, "How your score was calculated" table,
+  filterable skills with evidence, structured "Why not me?", JD requirements panel; "% context" removed.
+- Roadmap grouped by priority with prerequisites and learn → build → demonstrate → document → re-analyze steps,
+  strong skills collapsed. Progress grouped by role with change since the first analysis.
+- Responsive shell: sidebar on desktop, collapsible icon rail on tablets, top bar and drawer on mobile.
+- Banner shown only when the server reports temporary storage. Auth and Settings privacy copy corrected (the
+  Gemini data flow is disclosed); dead "resend" button for a removed error code deleted.
+
 ## Unreleased — security remediation P2 and P3 (branch `security/remediation`)
 
 ### Security
@@ -90,7 +126,7 @@
 - `AuthPage` — async submit with error display and loading state, autocomplete/maxLength attributes, accurate privacy copy.
 - `AnalysisPage` — replaced the hard-coded 2-second fake result with a real upload; added optional Job Title,
   extension checks, inline errors; accurate data-handling copy.
-- `ResultsPage` — "% match" relabelled "% context" with a tooltip (it is wording overlap, not proficiency); shows
+- `ResultsPage` — (superseded in the hackathon release: the "% context" badge was removed) "% match" relabelled "% context" with a tooltip (it is wording overlap, not proficiency); shows
   components that weren't scored; empty states; missing skills show required vs preferred.
 - `AssistantPage` — real API calls, safe bold rendering, form submit guarded while waiting, auto-scroll,
   starter prompt uses your actual partial skill.

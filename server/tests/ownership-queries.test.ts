@@ -1,6 +1,7 @@
 // Architecture/security test (P1): every prepared SQL statement that reads, changes or deletes rows of an owned table
 // must be scoped to the owner, because V2's isolation is application-level ownership in the queries (SQLite has no
-// row-level security). The SQL is taken from the real `.prepare(...)` call sites via the TypeScript compiler API.
+// row-level security). The SQL is taken from the real `db.get/all/run(...)` and `tx.get/all/run(...)` call sites via the
+// TypeScript compiler API.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -61,12 +62,23 @@ interface Statement {
   sql: string | null; // null = the argument isn't a literal string
 }
 
+/** Query calls on the application database (`db`) or a transaction (`tx`). */
+const QUERY_METHODS = new Set(["get", "all", "run"]);
+const DB_RECEIVERS = new Set(["db", "tx"]);
+
+// The migration runner's `tx.run(statement)` in db.ts executes the fixed MIGRATIONS scripts; it is the one dynamic call.
 function preparedStatements(): Statement[] {
   const out: Statement[] = [];
   for (const file of sourceFiles(path.join(SERVER_ROOT, "src"))) {
     const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node) => {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prepare") {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        QUERY_METHODS.has(node.expression.name.text) &&
+        DB_RECEIVERS.has(node.expression.expression.getText(source)) &&
+        !(path.basename(file) === "db.ts" && node.arguments[0] && ts.isIdentifier(node.arguments[0]) && node.arguments[0].text === "statement")
+      ) {
         const arg = node.arguments[0];
         const sql = arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) ? arg.text : null;
         out.push({ file: path.relative(SERVER_ROOT, file), line: source.getLineAndCharacterOfPosition(node.getStart()).line + 1, sql });

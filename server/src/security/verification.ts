@@ -15,12 +15,13 @@ export const RESEND_COOLDOWN_SECONDS = 60;
  */
 export async function sendVerification(db: Db, mailer: Mailer, user: Pick<UserRow, "id" | "name" | "email">): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000);
-  const latest = db.prepare("SELECT MAX(created_at) AS t FROM email_verifications WHERE user_id = ?").get(user.id) as { t: number | null };
-  if (latest.t && now - latest.t < RESEND_COOLDOWN_SECONDS) return false;
+  const latest = await db.get<{ t: number | null }>("SELECT MAX(created_at) AS t FROM email_verifications WHERE user_id = ?", user.id);
+  if (latest?.t && now - latest.t < RESEND_COOLDOWN_SECONDS) return false;
 
   const token = randomBytes(32).toString("base64url");
-  db.prepare("DELETE FROM email_verifications WHERE user_id = ?").run(user.id);
-  db.prepare("INSERT INTO email_verifications (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)").run(
+  await db.run("DELETE FROM email_verifications WHERE user_id = ?", user.id);
+  await db.run(
+    "INSERT INTO email_verifications (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
     hashToken(token),
     user.id,
     now + config.emailVerificationTtlSeconds,
@@ -32,13 +33,17 @@ export async function sendVerification(db: Db, mailer: Mailer, user: Pick<UserRo
 }
 
 /** Consumes a token. Returns the verified user id, or null if the token is unknown or expired. */
-export function consumeVerification(db: Db, token: string): string | null {
-  const row = db.prepare("SELECT user_id, expires_at FROM email_verifications WHERE token_hash = ?").get(hashToken(token)) as
-    | { user_id: string; expires_at: number }
-    | undefined;
-  if (!row) return null;
-  db.prepare("DELETE FROM email_verifications WHERE user_id = ?").run(row.user_id);
-  if (row.expires_at < Math.floor(Date.now() / 1000)) return null;
-  db.prepare("UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?").run(new Date().toISOString(), row.user_id);
-  return row.user_id;
+export async function consumeVerification(db: Db, token: string): Promise<string | null> {
+  // One transaction, so a token is consumed at most once even by parallel requests on different instances.
+  return db.transaction(async (tx) => {
+    const row = await tx.get<{ user_id: string; expires_at: number }>(
+      "SELECT user_id, expires_at FROM email_verifications WHERE token_hash = ?",
+      hashToken(token)
+    );
+    if (!row) return null;
+    await tx.run("DELETE FROM email_verifications WHERE user_id = ?", row.user_id);
+    if (row.expires_at < Math.floor(Date.now() / 1000)) return null;
+    await tx.run("UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?", new Date().toISOString(), row.user_id);
+    return row.user_id;
+  });
 }

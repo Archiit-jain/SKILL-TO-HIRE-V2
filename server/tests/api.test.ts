@@ -22,9 +22,9 @@ async function fakeGoogle(credential: string): Promise<GoogleIdentity | null> {
 const googleCredential = (sub: string, email: string, unverified = false) =>
   `google:${sub}:${email}${unverified ? ":unverified" : ""}:padding-to-min-length`;
 
-function newApp(parseSlots?: ParseSlots) {
+async function newApp(parseSlots?: ParseSlots) {
   const mailer = new MemoryMailer();
-  const app = createApp(openDb(":memory:"), { mailer, verifyGoogle: fakeGoogle, googleClientId: "test-client-id.apps.googleusercontent.com", parseSlots });
+  const app = createApp(await openDb(), { mailer, verifyGoogle: fakeGoogle, googleClientId: "test-client-id.apps.googleusercontent.com", parseSlots });
   /** Token from the most recent verification email sent to this address. */
   const tokenFor = (email: string) => {
     const msg = [...mailer.outbox].reverse().find((m) => m.to === email);
@@ -36,7 +36,7 @@ function newApp(parseSlots?: ParseSlots) {
 }
 
 /** Sign up + verify email; returns an agent holding a session. */
-async function verifiedUser(ctx: ReturnType<typeof newApp>, email = "student@example.com", password = "correct-horse-1"): Promise<Agent> {
+async function verifiedUser(ctx: Awaited<ReturnType<typeof newApp>>, email = "student@example.com", password = "correct-horse-1"): Promise<Agent> {
   const agent = request.agent(ctx.app);
   const res = await agent.post("/api/auth/signup").set(CSRF).send({ name: "Test Student", email, password });
   assert.equal(res.status, 201, JSON.stringify(res.body));
@@ -45,8 +45,8 @@ async function verifiedUser(ctx: ReturnType<typeof newApp>, email = "student@exa
   return agent;
 }
 
-describe("auth: sign-up and email verification", () => {
-  const ctx = newApp();
+describe("auth: sign-up and email verification", async () => {
+  const ctx = await newApp();
   const { app } = ctx;
 
   it("creates an unverified account, sends a link, and does not start a session", async () => {
@@ -111,8 +111,8 @@ describe("auth: sign-up and email verification", () => {
   });
 
   it("rejects domains that fail the mail-server check", async () => {
-    const strict = newApp();
-    const app2 = createApp(openDb(":memory:"), {
+    const strict = await newApp();
+    const app2 = createApp(await openDb(), {
       mailer: strict.mailer,
       checkEmail: async () => ({ ok: false, code: "email_domain_invalid", message: "no mail server" }),
     });
@@ -147,7 +147,7 @@ describe("auth: sign-up and email verification", () => {
   });
 
   it("disables email sign-up when no mail delivery is configured", async () => {
-    const noMail = createApp(openDb(":memory:"), {
+    const noMail = createApp(await openDb(), {
       mailer: { canDeliver: false, send: async () => { throw new Error("off"); } },
     });
     const providers = await request(noMail).get("/api/auth/providers");
@@ -157,8 +157,8 @@ describe("auth: sign-up and email verification", () => {
   });
 });
 
-describe("auth: login and session security", () => {
-  const ctx = newApp();
+describe("auth: login and session security", async () => {
+  const ctx = await newApp();
   const { app } = ctx;
   before(async () => {
     await verifiedUser(ctx, "a@example.com", "password-123");
@@ -202,8 +202,8 @@ describe("auth: login and session security", () => {
   });
 });
 
-describe("auth: Google sign-in", () => {
-  const ctx = newApp();
+describe("auth: Google sign-in", async () => {
+  const ctx = await newApp();
   const { app } = ctx;
 
   it("creates a verified, password-less account and starts a session", async () => {
@@ -269,8 +269,8 @@ describe("auth: Google sign-in", () => {
   });
 });
 
-describe("account", () => {
-  const ctx = newApp();
+describe("account", async () => {
+  const ctx = await newApp();
   const { app } = ctx;
 
   it("changes password, revoking the old session", async () => {
@@ -320,8 +320,8 @@ describe("account", () => {
   });
 });
 
-describe("guest analysis", () => {
-  const ctx = newApp();
+describe("guest analysis", async () => {
+  const ctx = await newApp();
   const { app } = ctx;
 
   it("allows exactly one analysis per browser without an account", async () => {
@@ -373,8 +373,8 @@ describe("guest analysis", () => {
   });
 });
 
-describe("analyses (signed in)", () => {
-  const ctx = newApp();
+describe("analyses (signed in)", async () => {
+  const ctx = await newApp();
   const { app } = ctx;
   let alice: Agent;
   let bob: Agent;
@@ -448,9 +448,9 @@ describe("analyses (signed in)", () => {
   });
 });
 
-describe("upload safety (P0)", () => {
+describe("upload safety (P0)", async () => {
   const slots = new ParseSlots(2);
-  const ctx = newApp(slots);
+  const ctx = await newApp(slots);
   const { app } = ctx;
   const SAFETY = "This document is too large or complex to process safely.";
 

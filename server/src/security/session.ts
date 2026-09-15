@@ -50,11 +50,12 @@ export function verifySession(token: string): SessionClaims | null {
 // ---- Server-side session rows (D-7) ---------------------------------------------------------------------------------
 
 /** Creates a session row (removing expired rows first) and returns the signed token for it. */
-export function createSession(db: Db, userId: string, tokenVersion: number, now = new Date()): string {
+export async function createSession(db: Db, userId: string, tokenVersion: number, now = new Date()): Promise<string> {
   const id = randomUUID();
   const expires = new Date(now.getTime() + config.sessionTtlSeconds * 1000);
-  db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now.toISOString());
-  db.prepare("INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(
+  await db.run("DELETE FROM sessions WHERE expires_at <= ?", now.toISOString());
+  await db.run(
+    "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
     id,
     userId,
     now.toISOString(),
@@ -64,20 +65,18 @@ export function createSession(db: Db, userId: string, tokenVersion: number, now 
 }
 
 /** True when the session exists, belongs to `userId` and hasn't expired. */
-export function isSessionActive(db: Db, sessionId: string, userId: string, now = new Date()): boolean {
-  return !!db
-    .prepare("SELECT 1 FROM sessions WHERE id = ? AND user_id = ? AND expires_at > ?")
-    .get(sessionId, userId, now.toISOString());
+export async function isSessionActive(db: Db, sessionId: string, userId: string, now = new Date()): Promise<boolean> {
+  return !!(await db.get("SELECT 1 AS ok FROM sessions WHERE id = ? AND user_id = ? AND expires_at > ?", sessionId, userId, now.toISOString()));
 }
 
 /** Revokes one session. Scoped to the owner so one user's token can't revoke another user's session. */
-export function revokeSession(db: Db, sessionId: string, userId: string) {
-  db.prepare("DELETE FROM sessions WHERE id = ? AND user_id = ?").run(sessionId, userId);
+export async function revokeSession(db: Db, sessionId: string, userId: string) {
+  await db.run("DELETE FROM sessions WHERE id = ? AND user_id = ?", sessionId, userId);
 }
 
 /** Revokes every session of a user (all devices). */
-export function revokeAllSessions(db: Db, userId: string) {
-  db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+export async function revokeAllSessions(db: Db, userId: string) {
+  await db.run("DELETE FROM sessions WHERE user_id = ?", userId);
 }
 
 function cookieOptions(): CookieOptions {

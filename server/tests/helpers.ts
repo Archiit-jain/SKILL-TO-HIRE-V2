@@ -17,9 +17,10 @@ export interface TestApp {
   tokenFor: (email: string) => string;
 }
 
-export function testApp(overrides: Partial<AppDeps> = {}): TestApp {
+/** An app on a private in-memory database, or on `database` when given (e.g. a file, to test persistence). */
+export async function testApp(overrides: Partial<AppDeps> = {}, database?: Db): Promise<TestApp> {
   const mailer = new MemoryMailer();
-  const db = openDb(":memory:");
+  const db = database ?? (await openDb());
   const app = createApp(db, { mailer, ...overrides });
   const tokenFor = (email: string) => {
     const msg = [...mailer.outbox].reverse().find((m) => m.to === email);
@@ -58,4 +59,4 @@ export function sessionCookie(res: request.Response): string {
 export const analyseAs = (agent: Agent | ReturnType<typeof request>, resume = SAMPLE_RESUME, jd = SAMPLE_JD) =>
   (agent as Agent).post("/api/analyses").set(CSRF).field("jdText", jd).attach("resume", makePdf(resume), "cv.pdf");
 
-export const count = (db: Db, sql: string, ...params: Array<string | number>) => (db.prepare(sql).get(...params) as { n: number }).n;
+export const count = async (db: Db, sql: string, ...params: Array<string | number>) => Number((await db.get<{ n: number }>(sql, ...params))!.n);

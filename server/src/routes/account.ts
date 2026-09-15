@@ -14,8 +14,6 @@ export function accountRouter(db: Db, deps: AppDeps) {
   const router = Router();
   router.use(requireAuth(db));
 
-  const getUser = db.prepare("SELECT * FROM users WHERE id = ?");
-  const byEmail = db.prepare("SELECT id FROM users WHERE email = ?");
   const hasPassword = (u: UserRow) => u.password_hash !== NO_PASSWORD;
 
   async function assertPassword(user: UserRow, password: string | undefined) {
@@ -31,9 +29,10 @@ export function accountRouter(db: Db, deps: AppDeps) {
 
   router.put(
     "/settings",
-    handler((req, res) => {
+    handler(async (req, res) => {
       const body = parseBody(z.object({ privacyMode: z.boolean(), notifications: z.boolean() }).strict(), req.body);
-      db.prepare("UPDATE users SET privacy_mode = ?, notifications = ?, updated_at = ? WHERE id = ?").run(
+      await db.run(
+        "UPDATE users SET privacy_mode = ?, notifications = ?, updated_at = ? WHERE id = ?",
         body.privacyMode ? 1 : 0,
         body.notifications ? 1 : 0,
         new Date().toISOString(),
@@ -63,29 +62,37 @@ export function accountRouter(db: Db, deps: AppDeps) {
         }
         await assertPassword(user, body.currentPassword);
         if (!deps.mailer.canDeliver) throw new HttpError(503, "Email changes aren't available yet.", "email_unavailable");
-        const other = byEmail.get(body.email) as { id: string } | undefined;
+        const other = await db.get<{ id: string }>("SELECT id FROM users WHERE email = ?", body.email);
         if (other && other.id !== user.id) throw new HttpError(409, "An account with this email already exists", "email_taken");
         await assertAcceptableEmail(deps, body.email);
       }
       const now = new Date().toISOString();
       if (emailChanged) {
         // The Google link belonged to the old address, so it is removed along with the verified flag.
-        db.prepare("UPDATE users SET name = ?, email = ?, email_verified = 0, google_sub = NULL, updated_at = ? WHERE id = ?").run(
-          body.name,
-          body.email,
-          now,
-          user.id
-        );
+        try {
+          await db.run(
+            "UPDATE users SET name = ?, email = ?, email_verified = 0, google_sub = NULL, updated_at = ? WHERE id = ?",
+            body.name,
+            body.email,
+            now,
+            user.id
+          );
+        } catch (err) {
+          // A parallel sign-up took the address between the check above and this update.
+          if (String((err as Error).message).includes("UNIQUE")) throw new HttpError(409, "An account with this email already exists", "email_taken");
+          throw err;
+        }
         // D-7: other devices are signed out; this device gets a fresh session.
-        revokeAllSessions(db, user.id);
-        setSessionCookie(res, createSession(db, user.id, user.token_version));
+        await revokeAllSessions(db, user.id);
+        setSessionCookie(res, await createSession(db, user.id, user.token_version));
         await sendVerification(db, deps.mailer, { id: user.id, name: body.name, email: body.email }).catch((err) =>
           console.error(`[account] verification email failed: ${mailErrorCode(err)}`)
         );
       } else {
-        db.prepare("UPDATE users SET name = ?, updated_at = ? WHERE id = ?").run(body.name, now, user.id);
+        await db.run("UPDATE users SET name = ?, updated_at = ? WHERE id = ?", body.name, now, user.id);
       }
-      res.json({ user: publicUser(getUser.get(user.id) as unknown as UserRow), verificationSent: emailChanged });
+      const updated = (await db.get<UserRow>("SELECT * FROM users WHERE id = ?", user.id))!;
+      res.json({ user: publicUser(updated), verificationSent: emailChanged });
     })
   );
 
@@ -107,17 +114,20 @@ export function accountRouter(db: Db, deps: AppDeps) {
         if (body.currentPassword === body.newPassword) throw new HttpError(400, "New password must be different", "validation");
       }
       const hash = await hashPassword(body.newPassword);
-      db.prepare(
-        "UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?"
-      ).run(hash, new Date().toISOString(), user.id);
+      await db.run(
+        "UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?",
+        hash,
+        new Date().toISOString(),
+        user.id
+      );
       // D-7: every session is revoked (rows deleted and token version bumped); this device gets a new session.
-      revokeAllSessions(db, user.id);
-      setSessionCookie(res, createSession(db, user.id, user.token_version + 1));
+      await revokeAllSessions(db, user.id);
+      setSessionCookie(res, await createSession(db, user.id, user.token_version + 1));
       res.status(204).end();
     })
   );
 
-  /** Permanently delete the account and (via ON DELETE CASCADE) every stored analysis. */
+  /** Permanently delete the account and everything stored for it. */
   router.delete(
     "/",
     deps.ipLimiters.account,
@@ -132,7 +142,15 @@ export function accountRouter(db: Db, deps: AppDeps) {
       } else if (body.confirm !== "DELETE") {
         throw new HttpError(400, 'Type DELETE to confirm account deletion', "confirmation_required");
       }
-      db.prepare("DELETE FROM users WHERE id = ?").run(user.id);
+      // Child rows are deleted explicitly, in one transaction, rather than relying on ON DELETE CASCADE: foreign key
+      // enforcement is a per-connection setting that a hosted database connection may not have enabled.
+      await db.transaction(async (tx) => {
+        await tx.run("DELETE FROM analyses WHERE user_id = ?", user.id);
+        await tx.run("DELETE FROM sessions WHERE user_id = ?", user.id);
+        await tx.run("DELETE FROM email_verifications WHERE user_id = ?", user.id);
+        await tx.run("DELETE FROM assistant_usage WHERE user_id = ?", user.id);
+        await tx.run("DELETE FROM users WHERE id = ?", user.id);
+      });
       clearSessionCookie(res);
       res.status(204).end();
     })

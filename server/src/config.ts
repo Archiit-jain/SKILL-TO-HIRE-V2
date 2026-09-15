@@ -24,7 +24,11 @@ const envSchema = z.object({
     .default(
       process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:5173"
     ),
-  // On Vercel only /tmp is writable, and it is wiped whenever the function instance is recycled.
+  // Persistent hosted database (Turso/libSQL). Required for data to persist on Vercel; e.g. libsql://<db>-<org>.turso.io
+  TURSO_DATABASE_URL: z.string().optional(),
+  TURSO_AUTH_TOKEN: z.string().optional(),
+  // Local SQLite file used when TURSO_DATABASE_URL is not set. On Vercel only /tmp is writable, and it is wiped whenever
+  // the function instance is recycled, so that fallback is NOT persistent.
   DATABASE_PATH: z.string().default(ON_VERCEL ? "/tmp/skill2hire.db" : path.join(SERVER_ROOT, "data", "skill2hire.db")),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters").optional(),
   SESSION_TTL_HOURS: z.coerce.number().positive().default(168),
@@ -88,6 +92,36 @@ export function resolveJwtSecret(ctx: JwtSecretContext): string {
   return readFileSync(file, "utf8").trim();
 }
 
+export interface DatabaseConfig {
+  /** libsql://… (hosted), a file path (local SQLite) or ":memory:" (tests). */
+  url: string;
+  authToken?: string;
+  /** True when stored data would be lost whenever the instance is recycled (Vercel without a hosted database). */
+  ephemeral: boolean;
+}
+
+/**
+ * Where data is stored. A hosted libSQL database (Turso) when TURSO_DATABASE_URL is set; otherwise a local SQLite file,
+ * which is persistent on a normal server but not on Vercel, where only the per-instance /tmp is writable. Tests always
+ * use a private in-memory database.
+ */
+export function resolveDatabaseConfig(ctx: {
+  nodeEnv: "development" | "production" | "test";
+  onVercel: boolean;
+  tursoUrl?: string;
+  tursoAuthToken?: string;
+  databasePath: string;
+}): DatabaseConfig {
+  if (ctx.nodeEnv === "test") return { url: ":memory:", ephemeral: false };
+  if (ctx.tursoUrl) {
+    if (!/^(libsql|https|wss):\/\//i.test(ctx.tursoUrl)) {
+      throw new Error("TURSO_DATABASE_URL must start with libsql://, https:// or wss:// (see docs/SETUP.md)");
+    }
+    return { url: ctx.tursoUrl, authToken: ctx.tursoAuthToken, ephemeral: false };
+  }
+  return { url: ctx.databasePath, ephemeral: ctx.onVercel };
+}
+
 function jwtSecretOrExit(): string {
   try {
     return resolveJwtSecret({ jwtSecret: env.JWT_SECRET, nodeEnv: env.NODE_ENV, onVercel: ON_VERCEL, vercelEnv: process.env.VERCEL_ENV });
@@ -106,7 +140,13 @@ export const config = {
   port: env.NODE_ENV === "production" ? (env.PORT ?? env.API_PORT) : env.API_PORT,
   host: env.HOST,
   appOrigin: env.APP_ORIGIN.replace(/\/$/, ""),
-  databasePath: env.NODE_ENV === "test" ? ":memory:" : env.DATABASE_PATH,
+  database: resolveDatabaseConfig({
+    nodeEnv: env.NODE_ENV,
+    onVercel: ON_VERCEL,
+    tursoUrl: env.TURSO_DATABASE_URL,
+    tursoAuthToken: env.TURSO_AUTH_TOKEN,
+    databasePath: env.DATABASE_PATH,
+  }),
   jwtSecret: jwtSecretOrExit(),
   sessionTtlSeconds: Math.round(env.SESSION_TTL_HOURS * 3600),
   trustProxy: env.TRUST_PROXY === "true",

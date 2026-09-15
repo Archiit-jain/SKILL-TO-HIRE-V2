@@ -183,9 +183,20 @@ development and tests only.
   analysis remains used. Expired guest results and markers are deleted during normal guest requests (analysis, latest
   result, sign-in); there is no background job. A browser whose marker is older than 365 days may use a free analysis
   again.
-- **Preview storage (D-1):** the Vercel preview stores SQLite in `/tmp`, separately for each serverless instance.
-  Data can reset whenever an instance is recycled or redeployed, and accounts, sessions, guest markers, quotas and
-  rate-limit counters aren't shared between instances. It is not a persistent production database.
+- **Storage (hackathon release, supersedes D-1):** data lives in a hosted libSQL database (Turso) when
+  `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` are set, shared by every Vercel instance. Credentials come only from
+  environment variables. Without them, a Vercel deployment falls back to a per-instance `/tmp` SQLite file that can
+  reset; the API reports `persistentStorage: false` and the UI shows a "Temporary storage" banner asking visitors not
+  to upload real personal data.
+- **Account deletion** deletes the account's analyses, sessions, verification tokens and assistant usage rows
+  explicitly in one transaction, then the user row, so it does not depend on foreign-key enforcement on the database
+  connection. Tested with foreign keys switched off.
+- **Sample analysis:** `GET /api/demo/analysis` uses built-in synthetic documents (fictional names, example.com
+  addresses); it stores nothing and sets no cookie. `POST /api/demo/assistant` is rules-only (never Gemini), validated,
+  CSRF-protected and shares the per-IP assistant limit.
+- **Atomicity with the async data layer:** the guest free-use marker and result, the guest claim, the Gemini quota
+  reservation, email-verification token use and the Google takeover of an unverified registration each run in one
+  write transaction. Operations on one database connection are also serialised per instance.
 
 ## 2b. Accounts, verification and guest access (v1.1)
 
@@ -268,7 +279,9 @@ addresses this with the 20 s parse deadline described above.
 | No email verification or password reset | Needs an email provider (OPEN DECISION D-12) |
 | No CAPTCHA | IP limits plus a per-account failed-login limit (5 / 15 min); a CAPTCHA isn't implemented |
 | No MFA | Out of scope for this micro project |
-| In-memory rate-limit and failed-login counters; per-instance SQLite on the Vercel preview | Counters reset on restart and, like sessions, guest markers and Gemini quotas on the preview's `/tmp` database, aren't shared across Vercel instances (D-1: preview only). A persistent shared store is a separate architecture decision before real public use |
+| In-memory rate-limit and failed-login counters | IP limits, the 5-failed-logins-per-account limit and the 60-assistant-requests-per-user limit are kept in memory per instance: they reset on restart and aren't shared across Vercel instances. Sessions, guest markers and Gemini quotas are in the database and are shared once Turso is configured |
+| Vercel without Turso | Falls back to temporary per-instance `/tmp` storage (banner shown). Configure `TURSO_DATABASE_URL` for real use |
+| Hosted database not exercised in tests | The libSQL client is tested against local SQLite files and in-memory databases. Turso itself wasn't available during development; verify on a deployment with real credentials |
 | First unknown-email login on an instance | Creates the dummy hash once (an extra scrypt call), so that one response is slower; later logins take equal time |
 | Existing sessions after deploying P1 | Tokens without a `jti` are rejected, so every user logs in once after deployment |
 | Parse worker on Vercel not verified | Locally the parse worker isolates and stops parsing at the 20 s deadline. If Vercel's bundle doesn't include the worker file, parsing falls back to the main thread (logged as `[parse] worker unavailable: <reason>`), where a cap-sized document blocks that instance and the deadline is only checked afterwards. Check the preview logs after deployment |
@@ -278,6 +291,6 @@ addresses this with the 20 s parse deadline described above.
 | Legitimate PDFs refused by the SEC-D3 policy | Encrypted/owner-password PDFs, LZW/RunLength/ASCII filters, filter chains such as `[/FlateDecode /DCTDecode]`, and Flate images larger than 10 MB decompressed are rejected with a clear 422 |
 | Inline images inside content streams | Not visible to the pre-scan; measured that pdf.js text extraction does not decode them (a 196 MB inline image left peak memory unchanged). A regression test keeps this covered |
 | CSP style hash tied to Radix | If a Radix upgrade changes the ScrollArea style, the hash test fails and the CSP must be updated. Google's sign-in button was not exercised in the local CSP check (no client ID configured); its documented CSP sources are unchanged |
-| SQLite file is not encrypted at rest | Use disk encryption on the host; passwords are hashed regardless |
+| Local SQLite file is not encrypted at rest | Use disk encryption on the host (Turso encrypts its storage); passwords are hashed regardless |
 | Sign-up timing | New and existing addresses do the same checks and hashing; the email sent differs (verification vs notice), and an unverified address within its 60 s cooldown sends nothing, so response times can differ slightly |
 | Dependency vulnerabilities | `npm run audit` (`npm audit --audit-level=high`) runs in CI on every push and pull request (`.github/workflows/security.yml`); 0 vulnerabilities as of 2026-09-15 |

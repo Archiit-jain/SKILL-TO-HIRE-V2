@@ -11,7 +11,7 @@ import { utcDay } from "../src/assistant/quota.js";
 import { MAX_GEMINI_ANSWER_CHARS, validateGeminiAnswer } from "../src/assistant/validate.js";
 import { config, PROJECT_ROOT } from "../src/config.js";
 import { SAMPLE_JD, SAMPLE_RESUME } from "./fixtures.js";
-import { analyseAs, count, CSRF, signedUpUser, testApp, type Agent } from "./helpers.js";
+import { analyseAs, count, CSRF, signedUpUser, testApp, type Agent, type TestApp } from "./helpers.js";
 
 const PII_RESUME = SAMPLE_RESUME.replace(
   "• Developed a Python ETL pipeline that loads 2M rows daily into PostgreSQL",
@@ -36,15 +36,15 @@ const echoDraft = (req: GeminiRequest): GeminiResponse => ({ text: JSON.parse(re
 
 async function setup(reply: Parameters<typeof fakeGemini>[0], opts: { perUser?: number; global?: number; now?: () => Date; model?: string } = {}) {
   const fake = fakeGemini(reply, opts.model);
-  const ctx = testApp({
+  const ctx = (await testApp({
     gemini: fake.phraser,
     geminiQuota: { perUserPerDay: opts.perUser ?? 20, globalPerDay: opts.global ?? 500 },
     now: opts.now,
-  });
+  }));
   return { ...fake, ctx };
 }
 
-async function userWithAnalysis(ctx: ReturnType<typeof testApp>, email: string, privacyMode = true): Promise<{ agent: Agent; id: string }> {
+async function userWithAnalysis(ctx: TestApp, email: string, privacyMode = true): Promise<{ agent: Agent; id: string }> {
   const agent = await signedUpUser(ctx, email);
   if (!privacyMode) await agent.put("/api/account/settings").set(CSRF).send({ privacyMode: false, notifications: true });
   const res = await analyseAs(agent, PII_RESUME);
@@ -197,7 +197,7 @@ describe("D-9 through the API: quotas, fallback, logging", () => {
     });
     const { agent, id } = await userWithAnalysis(ctx, "concurrent@example.com");
     const stored = (await agent.get(`/api/analyses/${id}`)).body.result as AnalysisResult;
-    const userId = (ctx.db.prepare("SELECT id FROM users WHERE email = 'concurrent@example.com'").get() as { id: string }).id;
+    const userId = ((await ctx.db.get("SELECT id FROM users WHERE email = 'concurrent@example.com'")) as { id: string }).id;
     const quota = { perUserPerDay: 20, globalPerDay: 500 };
     const replies = await Promise.all(
       Array.from({ length: 30 }, () =>
@@ -207,7 +207,7 @@ describe("D-9 through the API: quotas, fallback, logging", () => {
     assert.equal(replies.filter((r) => r.mode === "gemini").length, 20);
     assert.equal(replies.filter((r) => r.mode === "rules").length, 10);
     assert.equal(calls.length, 20);
-    assert.equal((ctx.db.prepare("SELECT count FROM assistant_usage WHERE user_id = ?").get(userId) as { count: number }).count, 20);
+    assert.equal(((await ctx.db.get("SELECT count FROM assistant_usage WHERE user_id = ?", userId)) as { count: number }).count, 20);
 
     // The HTTP route shares the same counter: a further chat is past the quota.
     assert.equal((await chat(agent)).body.mode, "rules");
@@ -225,8 +225,8 @@ describe("D-9 through the API: quotas, fallback, logging", () => {
     assert.equal(utcDay(now), "2026-09-15");
     assert.equal((await chat(agent)).body.mode, "gemini");
     assert.equal(calls.length, 3);
-    assert.equal(count(ctx.db, "SELECT COUNT(*) AS n FROM assistant_usage WHERE day = '2026-09-14'"), 0);
-    assert.equal(count(ctx.db, "SELECT COUNT(*) AS n FROM assistant_usage_global WHERE day = '2026-09-14'"), 0);
+    assert.equal(await count(ctx.db, "SELECT COUNT(*) AS n FROM assistant_usage WHERE day = '2026-09-14'"), 0);
+    assert.equal(await count(ctx.db, "SELECT COUNT(*) AS n FROM assistant_usage_global WHERE day = '2026-09-14'"), 0);
   });
 
   it("counts a thinking-setting retry as one answer", async () => {
@@ -239,7 +239,7 @@ describe("D-9 through the API: quotas, fallback, logging", () => {
     assert.equal(res.body.mode, "gemini");
     assert.equal(calls.length, 2);
     assert.ok(calls[0].thinkingConfig && !calls[1].thinkingConfig);
-    assert.equal(count(ctx.db, "SELECT COALESCE(SUM(count), 0) AS n FROM assistant_usage"), 1);
+    assert.equal(await count(ctx.db, "SELECT COALESCE(SUM(count), 0) AS n FROM assistant_usage"), 1);
   });
 
   it("falls back to the rules answer on errors, timeouts and rejected output, still consuming the reserved unit", async () => {
@@ -265,11 +265,11 @@ describe("D-9 through the API: quotas, fallback, logging", () => {
     for (const leak of ["secret-looking detail", "987", "https://example.com", question, "Python ETL"]) {
       assert.ok(!logged.includes(leak), `logs must not contain ${leak}`);
     }
-    assert.equal(count(ctx.db, "SELECT COALESCE(SUM(count), 0) AS n FROM assistant_usage"), 3);
+    assert.equal(await count(ctx.db, "SELECT COALESCE(SUM(count), 0) AS n FROM assistant_usage"), 3);
   });
 
   it("stays rules-only with no Gemini configured, and sends only redacted JSON when configured", async () => {
-    const rulesOnly = testApp({ gemini: null });
+    const rulesOnly = await testApp({ gemini: null });
     const plain = await userWithAnalysis(rulesOnly, "rules@example.com");
     assert.equal((await chat(plain.agent)).body.mode, "rules");
     assert.equal((await plain.agent.get("/api/assistant/status")).body.mode, "rules");

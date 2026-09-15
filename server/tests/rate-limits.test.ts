@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import request from "supertest";
 import { config } from "../src/config.js";
 import { FixedWindowCounter } from "../src/security/fixed-window.js";
-import { CSRF, signedUpUser, testApp } from "./helpers.js";
+import { CSRF, signedUpUser, testApp, type TestApp } from "./helpers.js";
 
 const RATE_LIMITED = { error: { code: "rate_limited", message: "Too many requests, please try again later" } };
 
@@ -13,7 +13,7 @@ function clock(start = Date.parse("2026-09-14T10:00:00Z")) {
   return { now: () => t, advance: (ms: number) => (t += ms) };
 }
 
-const login = (app: ReturnType<typeof testApp>["app"], email: string, password: string) =>
+const login = (app: TestApp["app"], email: string, password: string) =>
   request(app).post("/api/auth/login").set(CSRF).send({ email, password });
 
 describe("D-8 failed-login limit per account", () => {
@@ -24,7 +24,7 @@ describe("D-8 failed-login limit per account", () => {
 
   it("blocks the 6th attempt within 15 minutes, even with the right password, and unblocks after the window", async () => {
     const c = clock();
-    const ctx = testApp({ failedLogins: new FixedWindowCounter(5, 15 * 60_000, c.now) });
+    const ctx = await testApp({ failedLogins: new FixedWindowCounter(5, 15 * 60_000, c.now) });
     await signedUpUser(ctx, "victim@example.com");
     for (let i = 0; i < 5; i++) assert.equal((await login(ctx.app, "victim@example.com", "wrong-password")).status, 401);
     const blocked = await login(ctx.app, "victim@example.com", "correct-horse-1");
@@ -40,7 +40,7 @@ describe("D-8 failed-login limit per account", () => {
   it("gives unknown and known emails the identical response, so the limit reveals nothing", async () => {
     // Fixed clock: Retry-After depends only on when each email's window started, not on whether the account exists.
     const c = clock();
-    const ctx = testApp({ failedLogins: new FixedWindowCounter(5, 15 * 60_000, c.now) });
+    const ctx = await testApp({ failedLogins: new FixedWindowCounter(5, 15 * 60_000, c.now) });
     await signedUpUser(ctx, "known@example.com");
     for (let i = 0; i < 5; i++) {
       await login(ctx.app, "known@example.com", "wrong-password");
@@ -55,7 +55,7 @@ describe("D-8 failed-login limit per account", () => {
   });
 
   it("a successful login resets the count; other accounts are unaffected", async () => {
-    const ctx = testApp();
+    const ctx = await testApp();
     await signedUpUser(ctx, "resets@example.com");
     await signedUpUser(ctx, "bystander@example.com");
     for (let i = 0; i < 4; i++) await login(ctx.app, "resets@example.com", "wrong-password");
@@ -66,7 +66,7 @@ describe("D-8 failed-login limit per account", () => {
   });
 
   it("parallel guesses can't get past the limit", async () => {
-    const ctx = testApp();
+    const ctx = await testApp();
     await signedUpUser(ctx, "parallel@example.com");
     const results = await Promise.all(Array.from({ length: 10 }, () => login(ctx.app, "parallel@example.com", "wrong-password")));
     const statuses = results.map((r) => r.status);
@@ -94,7 +94,7 @@ describe("D-8 assistant requests per user", () => {
 
   it("allows 60 requests per user per hour, then 429 until the window ends; other users are unaffected", async () => {
     const c = clock();
-    const ctx = testApp({ assistantRequests: new FixedWindowCounter(60, 60 * 60_000, c.now) });
+    const ctx = await testApp({ assistantRequests: new FixedWindowCounter(60, 60 * 60_000, c.now) });
     const alice = await signedUpUser(ctx, "alice-rate@example.com");
     const bob = await signedUpUser(ctx, "bob-rate@example.com");
     for (let i = 0; i < 60; i++) {

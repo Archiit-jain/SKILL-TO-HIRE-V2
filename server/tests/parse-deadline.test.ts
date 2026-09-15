@@ -133,7 +133,7 @@ describe("D-11 through the upload route", () => {
   it("answers 422 at the deadline, keeps the parse slot until the worker exits, and doesn't use the guest's free analysis", async () => {
     const slots = new ParseSlots(2);
     const parser = newParser();
-    const ctx = testApp({ parseSlots: slots, documentParser: parser, parseTimeoutMs: 1_000 });
+    const ctx = await testApp({ parseSlots: slots, documentParser: parser, parseTimeoutMs: 1_000 });
     const guestCookie = `s2h_guest=${"ab".repeat(24)}`;
     const t0 = Date.now();
     const res = await request(ctx.app).post("/api/analyses").set(CSRF).set("Cookie", guestCookie).field("jdText", SAMPLE_JD).attach("resume", slowPdf(), "cv.pdf");
@@ -143,10 +143,10 @@ describe("D-11 through the upload route", () => {
     assert.ok(elapsed < 4_000, `response after ${elapsed} ms`);
     for (let i = 0; i < 50 && slots.inUse > 0; i++) await new Promise((r) => setTimeout(r, 20));
     assert.equal(slots.inUse, 0, "slot released once the worker exited");
-    assert.equal(count(ctx.db, "SELECT COUNT(*) AS n FROM guest_free_use"), 0);
+    assert.equal(await count(ctx.db, "SELECT COUNT(*) AS n FROM guest_free_use"), 0);
 
     // The next upload (normal deadline) is served by a fresh worker.
-    const later = testApp({ parseSlots: slots, documentParser: parser });
+    const later = await testApp({ parseSlots: slots, documentParser: parser });
     const ok = await request(later.app).post("/api/analyses").set(CSRF).set("Cookie", guestCookie).field("jdText", SAMPLE_JD).attach("resume", makePdf(SAMPLE_RESUME), "cv.pdf");
     assert.equal(ok.status, 201, JSON.stringify(ok.body));
   });
@@ -160,7 +160,7 @@ describe("D-11 through the upload route", () => {
       },
       close: async () => undefined,
     };
-    const ctx = testApp({ documentParser: fake, parseTimeoutMs: 20_000 });
+    const ctx = await testApp({ documentParser: fake, parseTimeoutMs: 20_000 });
     const res = await request(ctx.app)
       .post("/api/analyses")
       .set(CSRF)
