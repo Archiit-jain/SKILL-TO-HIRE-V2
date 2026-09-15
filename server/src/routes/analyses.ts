@@ -2,7 +2,8 @@ import { Router } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { analyze } from "../analysis/analyze.js";
-import { assertTextWithinLimit, documentTooLong, extractText, JD_TOO_LONG_MESSAGE, RESUME_TOO_LONG_MESSAGE } from "../analysis/extract.js";
+import { assertTextWithinLimit, documentTooLong, JD_TOO_LONG_MESSAGE, RESUME_TOO_LONG_MESSAGE, type DocKind } from "../analysis/extract.js";
+import { serverBusy } from "../analysis/parse-slots.js";
 import { safeFilename } from "../analysis/redact.js";
 import type { AnalysisResult } from "../analysis/types.js";
 import { config } from "../config.js";
@@ -10,7 +11,6 @@ import type { Db } from "../db.js";
 import type { AppDeps } from "../deps.js";
 import { handler, HttpError, parseBody } from "../http.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
-import { analysisLimiter } from "../middleware/security.js";
 import { ensureGuestId, guestHasUsedFreeAnalysis, latestGuestResult, purgeExpiredGuestData, readGuestId, recordGuestAnalysis } from "../security/guest.js";
 
 // Files stay in memory only; they are never written to disk.
@@ -35,7 +35,7 @@ const idParam = z.object({ id: z.uuid() });
 
 const LOGIN_REQUIRED = "You've used your free analysis. Log in or create an account to run more analyses.";
 
-export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots">) {
+export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots" | "documentParser" | "parseTimeoutMs" | "ipLimiters">) {
   const router = Router();
   const auth = requireAuth(db);
 
@@ -52,7 +52,7 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots">) {
 
   router.post(
     "/",
-    analysisLimiter,
+    deps.ipLimiters.analysis,
     optionalAuth(db),
     // Guests get one analysis per browser (free-use marker, D-6). Checked before the upload is parsed so blocked
     // requests stay cheap; expired guest data is purged on the way.
@@ -86,7 +86,17 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots">) {
       const resumeName = safeFilename(Buffer.from(resume.originalname, "latin1").toString("utf8"));
       // D-5: extraction and analysis run inside a parse slot; when all slots are busy -> 503 server_busy + Retry-After.
       // A refused request stores nothing, so a guest's free analysis is not used up.
-      const result = await deps.parseSlots.run(async () => {
+      if (!deps.parseSlots.tryAcquire()) throw serverBusy();
+      // D-11 (P2): one deadline for all documents of this request. The slot is released only after every document's
+      // parsing has really stopped (finished, or its parse worker was terminated at the deadline).
+      const deadline = Date.now() + deps.parseTimeoutMs;
+      const pending: Promise<void>[] = [];
+      const extractText = (buffer: Buffer, filename: string, allowed: DocKind[]) => {
+        const job = deps.documentParser.extract({ buffer, filename, allowed }, deadline);
+        pending.push(job.settled);
+        return job.text;
+      };
+      const result = await (async () => {
         const resumeText = assertTextWithinLimit(
           await extractText(resume.buffer, resumeName, ["pdf", "docx"]),
           config.upload.maxExtractedChars,
@@ -117,6 +127,8 @@ export function analysesRouter(db: Db, deps: Pick<AppDeps, "parseSlots">) {
           // Guests always get privacy mode (redacted contact details, anonymised file name).
           privacyMode: req.user ? !!req.user.privacy_mode : true,
         });
+      })().finally(() => {
+        void Promise.all(pending).then(() => deps.parseSlots.release());
       });
 
       if (!req.user) {

@@ -130,6 +130,10 @@ export const config = {
     // D-5: documents parsed at the same time per server instance; extra requests get 503 with Retry-After.
     maxConcurrentParses: 2,
     busyRetryAfterSeconds: 5,
+    // D-11 (P2): all document extraction for one upload request must finish within this time; otherwise the parse
+    // worker is terminated and the request gets 422 file_too_complex. Leaves room for the rest of the request inside Vercel's
+    // 30 s function limit (two cap-sized PDFs parsed at once took 26-28 s locally in P0).
+    parseTimeoutMs: 20_000,
     // D-4: resume text (after cleaning) longer than this is rejected, never truncated.
     maxExtractedChars: 100_000,
   },

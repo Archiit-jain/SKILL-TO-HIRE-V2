@@ -15,7 +15,6 @@ Base path: `/api`. All responses are JSON and carry `Cache-Control: no-store`.
 | 401 | `unauthenticated`, `invalid_credentials`, `login_required`, `google_invalid` | No/invalid session; wrong login; guest already used the free analysis; Google token rejected |
 | 403 | `csrf`, `invalid_password`, `email_not_verified`, `google_email_unverified` | CSRF check failed; current password wrong; email not verified yet; Google email unverified |
 | 404 | `not_found` | Unknown route, or an analysis that isn't yours |
-| 409 | `email_taken`, `email_unverified_exists` | Email already registered (verified / waiting for verification) |
 | 413 | `upload` | File larger than the upload limit (5 MB locally, 4 MB on Vercel) |
 | 415 | `file_type` | Extension not allowed, or content doesn't match extension |
 | 422 | `file_corrupt`, `file_too_complex`, `empty_text`, `disposable_email`, `email_domain_invalid` | Unreadable file; document over a safety limit (`"This document is too large or complex to process safely."`) or an encrypted PDF (`"Encrypted or password-protected PDFs aren't supported. Please upload an unprotected PDF."`); too little text; temporary-mail provider; domain can't receive email |
@@ -28,7 +27,7 @@ Base path: `/api`. All responses are JSON and carry `Cache-Control: no-store`.
 
 ## Health
 
-`GET /api/health` → `200 {"status":"ok","assistant":"rules"|"gemini"}`
+`GET /api/health` → `200 {"status":"ok"}` in production. Development and tests also return `assistant` ("rules"|"gemini") and `ephemeralStorage`.
 
 ## Auth
 
@@ -36,27 +35,30 @@ Base path: `/api`. All responses are JSON and carry `Cache-Control: no-store`.
 → `{"googleClientId": string|null, "emailSignup": boolean}`. Tells the UI whether to show the Google button and
 whether email sign-up is possible (false in production without SMTP).
 
-### `POST /api/auth/signup` (rate limited: auth)
+### `POST /api/auth/signup` (rate limited: signup, 5 per hour per IP)
 Body `{name, email, password}`. Name is 1–80 chars without `<>` or control chars; email is valid and max 254 chars
 (stored lowercase); password is 8–128 chars. The email must not be a disposable/temporary-mail domain, and (unless
 `EMAIL_DNS_CHECK=false`) its domain must have an MX or A record.
-→ `201 {"verificationRequired": true, "email"}`. **No session is started.** A single-use verification link
-(`<APP_ORIGIN>/?verify=<token>`, valid `EMAIL_VERIFICATION_TTL_HOURS`) is emailed.
-`409 email_taken` / `409 email_unverified_exists`, `422 disposable_email` / `422 email_domain_invalid`, `503 email_unavailable`.
+→ `201 {"verificationRequired": true, "email"}` for **every** acceptable address, new or already registered (P2, D-10),
+so the response doesn't reveal which emails have accounts. **No session is started.** A new address gets a single-use
+verification link (`<APP_ORIGIN>/?verify=<token>`, valid `EMAIL_VERIFICATION_TTL_HOURS`); an unverified existing
+address gets its link again (60 s cooldown); a verified existing address gets a "you already have an account" email.
+An existing account is never changed.
+`422 disposable_email` / `422 email_domain_invalid`, `502 email_send_failed`, `503 email_unavailable`.
 
-### `POST /api/auth/verify-email` (rate limited: auth)
+### `POST /api/auth/verify-email` (rate limited: verification, shared with resend)
 Body `{token}` → `200 {"user"}` + session cookie. Marks the email verified, deletes the token, and moves this
 browser's free guest analysis into the account. `400 invalid_token` if unknown, used or expired.
 
-### `POST /api/auth/resend-verification` (rate limited: auth)
+### `POST /api/auth/resend-verification` (rate limited: verification, shared with verify-email)
 Body `{email}` → always `202 {"message"}` (same response whether or not the account exists). Sends a new link only
 for unverified accounts, at most once per 60 s per account; older links stop working.
 
-### `POST /api/auth/login` (rate limited: auth)
+### `POST /api/auth/login` (rate limited: login + 5 failed logins per account)
 Body `{email, password}` → `200 {"user"}` + cookie. `401` with the same message whether the email or the password
 is wrong; `403 email_not_verified` for a correct password on an unverified account.
 
-### `POST /api/auth/google` (rate limited: auth)
+### `POST /api/auth/google` (rate limited: google)
 Body `{credential}` - the ID token from Google Identity Services. The server verifies signature, expiry, issuer and
 audience (`GOOGLE_CLIENT_ID`) and requires `email_verified`.
 → `200 {"user"}` + cookie. Signs in the account linked to that Google ID; otherwise links the account with the same
@@ -84,7 +86,7 @@ Deletes every session of the account and increments the token version → `204`.
 | `PUT /api/account/password` | `{currentPassword?, newPassword}` - `currentPassword` required if the account has a password; Google-only accounts set a first password without it | `204`; all sessions revoked, current cookie re-issued |
 | `DELETE /api/account` | `{currentPassword}`, or `{confirm: "DELETE"}` for Google-only accounts | `204`; user, all analyses, sessions and usage counters permanently deleted, cookie cleared |
 
-`PATCH`, `PUT /password` and `DELETE` share the auth rate limit.
+`PATCH`, `PUT /password` and `DELETE` share the account rate limit.
 
 ## Analyses
 
@@ -114,6 +116,7 @@ Upload safety errors (security remediation P0; limits in `config.upload`):
 | 422 | `file_corrupt` | Malformed archive or PDF |
 | 422 | `document_too_long` | Resume text over 100,000 characters, pasted or uploaded JD text over 50,000 characters, or a PDF with more than 20 pages (security remediation P1, D-4). Documents are rejected, never truncated. Messages: "Your resume has more text than we can analyse (limit: 100,000 characters)." / "The job description has more text than we can analyse (limit: 50,000 characters)." / "This PDF has more than 20 pages. Please upload a shorter document." |
 | 503 | `server_busy` | Two documents are already being parsed on this instance; retry after `Retry-After` seconds. Nothing is stored and a guest's free analysis is not used up |
+| 422 | `file_too_complex` | The request's documents weren't parsed within the 20 s parse deadline (P2, D-11); the parse was stopped. Generic safety message |
 
 ```jsonc
 {
@@ -161,11 +164,16 @@ with `mode: "rules"` and no error.
 | Limiter | Window | Max requests | Applies to |
 |---|---|---|---|
 | api | 15 min | 300 | every `/api` request |
-| auth | 15 min | 10 | signup, login, profile/password/account-delete |
+| login | 15 min | 20 | `POST /api/auth/login` |
+| signup | 60 min | 5 | `POST /api/auth/signup` |
+| verification | 15 min | 10 | `POST /api/auth/verify-email` and `POST /api/auth/resend-verification` together |
+| google | 15 min | 20 | `POST /api/auth/google` |
+| account | 15 min | 10 | profile, password change, account deletion |
 | analysis | 60 min | 30 | `POST /api/analyses` |
 | assistant | 60 min | 60 | `POST /api/assistant/chat` |
 
-These values are provisional; see [DECISIONS.md](DECISIONS.md). The IP limiters are disabled when `NODE_ENV=test`.
+These values are provisional; see [DECISIONS.md](DECISIONS.md). The auth limiter was split per route in P2 (D-8).
+The IP limiters are disabled when `NODE_ENV=test` unless a test enables them.
 
 Per-account and per-user limits (security remediation P1, D-8; always active, in memory per instance):
 

@@ -26,8 +26,12 @@
   email change, account deletion) runs in one of **2** slots per instance (each scrypt call uses ~134 MB). A request
   that gets no slot within **5 s** receives `503 server_busy` with `Retry-After: 5`.
 - **User enumeration on login:** the same error message for unknown email and wrong password; a real scrypt
-  comparison runs for unknown emails and Google-only accounts too, so response time doesn't reveal which. *Signup
-  still returns 409 for an existing email (usability trade-off; the approved fix is planned for P2).*
+  comparison runs for unknown emails and Google-only accounts too, so response time doesn't reveal which.
+- **Sign-up enumeration (P2, D-10):** new, unverified and already-verified addresses get the same checks, the same
+  scrypt work and the same `201 {"verificationRequired": true, "email"}`. The mailbox owner learns the rest by email: a
+  new account gets its verification link, an unverified one gets its link again (subject to the 60 s cooldown), and a
+  verified account gets a "you already have an account" notice with no action link. An existing account is never
+  modified by a sign-up request.
 - **Failed-login limit (P1, D-8):** at most **5** failed logins per account per **15 min**, on top of the IP limit.
   Keyed by an HMAC of the normalised email (no plaintext email kept in memory), so known and unknown addresses get
   the identical `429 rate_limited`; attempts are counted up front so parallel guesses can't pass the limit, and a
@@ -92,19 +96,58 @@ chars without `<>` or control characters. All SQL uses prepared statements with 
 - Parse errors return a generic 422 message and never echo parser internals.
 
 ### HTTP hardening (helmet)
-CSP `default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self';
-form-action 'self'; connect-src 'self'` (`style-src` allows `'unsafe-inline'` because Radix ScrollArea injects a
-`<style>` tag), HSTS in production, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+CSP `default-src 'self'; script-src 'self' <GIS client>; script-src-attr 'none'; object-src 'none';
+frame-ancestors 'none'; base-uri 'self'; form-action 'self'; connect-src 'self' <GIS>`. **P2:** `style-src` no longer
+allows `'unsafe-inline'`: the only inline `<style>` the app creates (Radix ScrollArea's fixed viewport style) is allowed
+by its SHA-256 hash, and `vercel.json` carries the same policy for the static site. React sets style properties through
+the DOM, which CSP doesn't restrict. Verified in a browser against the production build (logged in, Career Assistant
+with messages): the Radix style applied and no CSP violation was reported. A test fails if the installed Radix version
+changes that style. HSTS in production, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
 `X-Powered-By` removed, `Cache-Control: no-store` on API responses.
 
 ### Rate limiting
 See [API.md](API.md#rate-limits-per-client-ip). Set `TRUST_PROXY=true` behind a proxy, otherwise every client
-shares the proxy's IP. P1 adds per-account (5 failed logins / 15 min) and per-user (60 assistant requests / hour)
+shares the proxy's IP. **P2:** the former shared auth limit is split per route (login 20/15 min, sign-up 5/h,
+verification + resend 10/15 min together, Google 20/15 min; profile/password/deletion keep 10/15 min), and the
+limiters are covered by tests (including a spoofed `X-Forwarded-For`, which is ignored while `TRUST_PROXY=false`). P1 adds per-account (5 failed logins / 15 min) and per-user (60 assistant requests / hour)
 limits; all limiters are in memory and per instance.
 
 ### Error handling
-Unhandled errors are logged server-side and return `{"code":"internal","message":"Something went wrong"}`, with no
-stack traces.
+Unhandled errors return `{"code":"internal","message":"Something went wrong"}`, with no stack traces.
+
+### Operational logging (P2, L-5)
+Logs never contain resume/JD text, Gemini questions/evidence/answers, passwords, tokens, session ids or secrets.
+Specifically: unhandled errors log the error class and stack frames without the message line; parser failures log
+the document kind and error class; failed emails log only the transport's error code (e.g. `EAUTH`), never the
+message (which can contain addresses); rejected Google tokens log the error class; the DNS email check no longer logs
+the domain; Gemini and parse-worker events log reason codes. Development's console mailer still prints verification
+links locally by design.
+
+### Health endpoint (P2, L-4)
+In production `GET /api/health` returns only `{"status":"ok"}`. The assistant mode and storage flag are included in
+development and tests only.
+
+### Parse deadline and isolation (P2, D-11)
+- Every upload request has one **20 s** deadline for all of its documents, including time waiting for the parser.
+- Extraction runs in a **worker thread**. If the deadline passes while a document is being parsed, the worker is
+  **terminated** (this stops synchronous parser code too), the request gets `422 file_too_complex` ("This document is
+  too large or complex to process safely."), and the parse slot is released only after the thread has exited. The
+  next document starts a fresh worker.
+- **One** parse worker per instance; the 2 parse slots (D-5) are unchanged and their documents are parsed in turn.
+- Measurements behind the design (local, 2026-09-15):
+  - In-process cancellation doesn't work: pdf.js keeps the event loop busy until a document is finished (a 500 ms
+    deadline only fired after 11.6 s).
+  - pdf.js always loads the native `@napi-rs/canvas` addon; terminating a worker that had loaded it crashed the whole
+    Node process (segmentation fault) in 2 of 3 plain-Node runs. The parse worker therefore resolves
+    `@napi-rs/canvas` to an inert placeholder (`canvas-placeholder.cjs`; text extraction never renders) and refuses
+    to start if the native addon is loaded anyway. With the placeholder, repeated terminations (including mid-parse)
+    exited cleanly in every run, and pdf.js's first-document cost fell from ~578 MB to ~82 MB.
+  - Two workers (one per slot) peaked at 1.01–1.09 GB for a cap-sized DOCX and PDF at once (compiled JS), above the
+    1024 MB Vercel function; one worker peaked at 850 MB (796 MB with a 768 MB heap cap). A cap-sized PDF stopped at
+    its deadline was rejected within ~0.5 s of it and the worker exited ~20 ms later.
+- If the worker can't start (worker file not in a serverless bundle, `module.registerHooks` unavailable, native addon
+  loaded), parsing falls back to the main thread with a logged reason code. That fallback can't interrupt a parse; the
+  deadline is then only enforced on the result. **Whether the worker starts on Vercel has not been verified.**
 
 ### LLM safety (optional Gemini, security remediation P1 D-9)
 - Gemini is only a phrasing layer. Scores, components, skill matching, Strong/Partial/Missing, evidence and Why Not Me
@@ -168,6 +211,9 @@ CSRF header and foreign-origin rejection, forged `alg:none` token rejection, sec
 revoking other sessions, password required for email change and deletion, auth required for uploads, spoofed file
 (415), oversize file (413), cross-user read/delete/assistant access (404), UUID validation.
 `server/tests/analysis.test.ts` checks zip-bomb rejection, content/extension mismatch, filename sanitising and PII redaction.
+P2 adds `parse-deadline.test.ts` (worker deadline, termination, fallback, route slot release) and `p2-hardening.test.ts`
+(split IP limiters, sign-up enumeration, health exposure, CSP hash, log hygiene). P3 is a design document only
+([RAG-SECURITY.md](RAG-SECURITY.md)).
 P1 adds `password-slots.test.ts`, `sessions.test.ts`, `guest-lifecycle.test.ts`, `rate-limits.test.ts`,
 `gemini-guard.test.ts` (fake Gemini only), `config-secret.test.ts`, `ownership-queries.test.ts` (every prepared
 statement on an owned table must filter by its owner), `migration.test.ts` and `text-limits.test.ts`.
@@ -212,8 +258,8 @@ of **~162 MB (~16%)** against the 1024 MB Vercel function limit (~200 MB without
 doesn't have). The exact heap limit and runtime overhead of Vercel's Node were **not** verified locally; check real
 peak memory on the Vercel preview. This is not a P0 memory blocker, and no limit or parse-slot count was changed.
 
-**Timing:** two capped PDFs parsed at once took **26–28 s** locally, close to Vercel's 30 s function timeout. This is
-a P2 concern (worker-thread timeout, D-11), not a P0 memory blocker.
+**Timing:** two capped PDFs parsed at once took **26–28 s** locally, close to Vercel's 30 s function timeout. P2 (D-11)
+addresses this with the 20 s parse deadline described above.
 
 ## 4. Known limitations / residual risk
 
@@ -225,12 +271,13 @@ a P2 concern (worker-thread timeout, D-11), not a P0 memory blocker.
 | In-memory rate-limit and failed-login counters; per-instance SQLite on the Vercel preview | Counters reset on restart and, like sessions, guest markers and Gemini quotas on the preview's `/tmp` database, aren't shared across Vercel instances (D-1: preview only). A persistent shared store is a separate architecture decision before real public use |
 | First unknown-email login on an instance | Creates the dummy hash once (an extra scrypt call), so that one response is slower; later logins take equal time |
 | Existing sessions after deploying P1 | Tokens without a `jti` are rejected, so every user logs in once after deployment |
-| PDF/DOCX parsing runs on the main event loop | Size caps and the 2-slot limit bound memory, but a cap-sized document still blocks other requests on that instance for several seconds. A worker-thread timeout is planned for P2 after a Vercel bundling check |
+| Parse worker on Vercel not verified | Locally the parse worker isolates and stops parsing at the 20 s deadline. If Vercel's bundle doesn't include the worker file, parsing falls back to the main thread (logged as `[parse] worker unavailable: <reason>`), where a cap-sized document blocks that instance and the deadline is only checked afterwards. Check the preview logs after deployment |
+| Documents parsed in turn | With one parse worker, a second concurrent upload waits for the first; its wait counts toward its 20 s deadline, so two cap-sized PDFs at once end with the second rejected (measured: 20.3 s total) |
 | Peak memory near the Vercel function size | Measured locally through the real route: two cap-sized parses at once peaked at ~862 MB with a 960 MB heap cap (~162 MB / ~16% margin to Vercel's 1024 MB). The earlier 852 MB shortcut-harness figure is superseded. pdf.js alone peaks at ~578 MB on its first document, before any P0 change. Caps were **not** changed; Vercel's heap limit and runtime overhead weren't verified, so revalidate on the Vercel preview |
-| Slow concurrent PDF parsing | Two capped PDFs at once took 26–28 s locally, close to Vercel's 30 s function timeout. P2 concern (worker-thread timeout), not a P0 memory blocker |
+| Slow concurrent PDF parsing (P0 finding) | Two capped PDFs at once took 26–28 s locally; now bounded by the 20 s parse deadline (D-11) |
 | Legitimate PDFs refused by the SEC-D3 policy | Encrypted/owner-password PDFs, LZW/RunLength/ASCII filters, filter chains such as `[/FlateDecode /DCTDecode]`, and Flate images larger than 10 MB decompressed are rejected with a clear 422 |
 | Inline images inside content streams | Not visible to the pre-scan; measured that pdf.js text extraction does not decode them (a 196 MB inline image left peak memory unchanged). A regression test keeps this covered |
-| `style-src 'unsafe-inline'` | Needed by Radix ScrollArea; low risk because `script-src` is strict |
+| CSP style hash tied to Radix | If a Radix upgrade changes the ScrollArea style, the hash test fails and the CSP must be updated. Google's sign-in button was not exercised in the local CSP check (no client ID configured); its documented CSP sources are unchanged |
 | SQLite file is not encrypted at rest | Use disk encryption on the host; passwords are hashed regardless |
-| Signup reveals whether an email is registered | Accepted trade-off (see above) |
-| `npm audit`: 0 vulnerabilities as of 2026-09-13 | Re-run regularly; install scripts for esbuild/protobufjs were not auto-approved by npm and weren't needed |
+| Sign-up timing | New and existing addresses do the same checks and hashing; the email sent differs (verification vs notice), and an unverified address within its 60 s cooldown sends nothing, so response times can differ slightly |
+| Dependency vulnerabilities | `npm run audit` (`npm audit --audit-level=high`) runs in CI on every push and pull request (`.github/workflows/security.yml`); 0 vulnerabilities as of 2026-09-15 |

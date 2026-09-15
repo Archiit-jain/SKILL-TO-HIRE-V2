@@ -1,7 +1,7 @@
 import mammoth from "mammoth";
 import { config } from "../config.js";
 import { HttpError } from "../http.js";
-import { checkDocx } from "./docx-guard.js";
+import { checkDocx, UNSAFE_DOCUMENT_MESSAGE } from "./docx-guard.js";
 import { checkPdf } from "./pdf-guard.js";
 
 export type DocKind = "pdf" | "docx" | "txt";
@@ -14,6 +14,9 @@ export const JD_TOO_LONG_MESSAGE = "The job description has more text than we ca
 export const PDF_TOO_MANY_PAGES_MESSAGE = "This PDF has more than 20 pages. Please upload a shorter document.";
 
 export const documentTooLong = (message: string) => new HttpError(422, message, "document_too_long");
+
+/** D-11 (P2): the upload's parse deadline passed and parsing was stopped. Same public error as other safety limits. */
+export const parseDeadlineExceeded = () => new HttpError(422, UNSAFE_DOCUMENT_MESSAGE, "file_too_complex");
 
 /** Throws 422 document_too_long when `text` (already cleaned) is longer than `maxChars`. */
 export function assertTextWithinLimit(text: string, maxChars: number, message: string): string {
@@ -79,8 +82,9 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
     }
   } catch (err) {
     if (err instanceof HttpError) throw err;
-    // Log the parser's real reason server-side only; the client gets a generic message.
-    console.warn(`[extract] ${kind} parse failed:`, (err as Error)?.message ?? err);
+    // Only the document kind and the error class are logged (P2 log hardening): library messages can quote document
+    // content or internal paths.
+    console.warn(`[extract] ${kind} parse failed: ${(err as Error)?.name ?? "error"}`);
     throw new HttpError(422, `Could not read ${kind.toUpperCase()} file. Is it corrupt or password-protected?`, "file_corrupt");
   }
   // pdf-parse inserts "-- 1 of 3 --" page markers

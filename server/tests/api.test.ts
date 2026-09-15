@@ -122,9 +122,12 @@ describe("auth: sign-up and email verification", () => {
     assert.equal(strict.mailer.outbox.length, 0);
   });
 
-  it("reports duplicates and answers resend requests without revealing accounts", async () => {
+  it("answers duplicate sign-ups and resend requests without revealing accounts", async () => {
+    // D-10 (P2): an existing address gets the same 201 as a new one; the owner is told by email instead.
     const dup = await request(app).post("/api/auth/signup").set(CSRF).send({ name: "B", email: "a@example.com", password: "password-123" });
-    assert.equal(dup.status, 409);
+    assert.equal(dup.status, 201);
+    assert.deepEqual(dup.body, { verificationRequired: true, email: "a@example.com" });
+    assert.equal(ctx.mailer.outbox.at(-1)?.subject, "You already have a Skill2Hire account");
 
     const before = ctx.mailer.outbox.length;
     const unknown = await request(app).post("/api/auth/resend-verification").set(CSRF).send({ email: "ghost@example.com" });

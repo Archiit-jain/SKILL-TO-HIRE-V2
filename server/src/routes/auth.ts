@@ -5,7 +5,9 @@ import type { Db } from "../db.js";
 import type { AppDeps } from "../deps.js";
 import { handler, HttpError, parseBody } from "../http.js";
 import { NO_PASSWORD, publicUser, requireAuth, type UserRow } from "../middleware/auth.js";
-import { authLimiter, rateLimited } from "../middleware/security.js";
+import { rateLimited } from "../middleware/security.js";
+import { accountExistsEmail, mailErrorCode } from "../email/mailer.js";
+import { config } from "../config.js";
 import { emailKey } from "../security/fixed-window.js";
 import { claimGuestAnalyses } from "../security/guest.js";
 import { getDummyHash, hashPassword, isPasswordHash, verifyPassword } from "../security/password.js";
@@ -57,51 +59,52 @@ export function authRouter(db: Db, deps: AppDeps) {
 
   router.post(
     "/signup",
-    authLimiter,
+    deps.ipLimiters.signup,
     handler(async (req, res) => {
       const body = parseBody(z.object({ name: nameSchema, email: emailSchema, password: passwordSchema }), req.body);
       if (!deps.mailer.canDeliver) {
         throw new HttpError(503, "Email sign-up isn't available yet. Please continue with Google.", "email_unavailable");
       }
-      const existing = byEmail.get(body.email) as UserRow | undefined;
-      if (existing) {
-        throw new HttpError(
-          409,
-          existing.email_verified
-            ? "An account with this email already exists. Log in instead."
-            : "This email is registered but not verified yet. Check your inbox or resend the verification email.",
-          existing.email_verified ? "email_taken" : "email_unverified_exists"
-        );
-      }
+      // D-10 (P2): new and existing addresses get the same checks, the same password hashing work and the same response,
+      // so sign-up can't be used to find out which emails have accounts. The mailbox owner learns the rest by email:
+      // a new account gets its verification link, an unverified one gets its link again (subject to the resend
+      // cooldown), and a verified account gets a "you already have an account" notice. The password is never applied
+      // to an existing account.
       await assertAcceptableEmail(deps, body.email);
-
-      const id = randomUUID();
-      const now = new Date().toISOString();
       const hash = await hashPassword(body.password);
-      try {
-        db.prepare(
-          "INSERT INTO users (id, name, email, password_hash, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)"
-        ).run(id, body.name, body.email, hash, now, now);
-      } catch (err) {
-        if (String((err as Error).message).includes("UNIQUE")) {
-          throw new HttpError(409, "An account with this email already exists", "email_taken");
+      let existing = byEmail.get(body.email) as UserRow | undefined;
+      if (!existing) {
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        try {
+          db.prepare(
+            "INSERT INTO users (id, name, email, password_hash, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)"
+          ).run(id, body.name, body.email, hash, now, now);
+          existing = byId.get(id) as unknown as UserRow;
+        } catch (err) {
+          if (!String((err as Error).message).includes("UNIQUE")) throw err;
+          existing = byEmail.get(body.email) as UserRow | undefined; // a parallel sign-up created it first
+          if (!existing) throw err;
         }
-        throw err;
       }
       try {
-        await sendVerification(db, deps.mailer, { id, name: body.name, email: body.email });
+        if (existing.email_verified) {
+          await deps.mailer.send({ to: existing.email, ...accountExistsEmail(existing.name, config.appOrigin) });
+        } else {
+          await sendVerification(db, deps.mailer, existing);
+        }
       } catch (err) {
-        console.error("[auth] verification email failed:", (err as Error).message);
-        throw new HttpError(502, "Account created, but we couldn't send the verification email. Try \"Resend\" in a minute.", "email_send_failed");
+        console.error(`[auth] sign-up email failed: ${mailErrorCode(err)}`);
+        throw new HttpError(502, "We couldn't send the email. Please try again in a minute.", "email_send_failed");
       }
-      // No session yet: the account can't be used until the email is verified.
+      // No session yet: an account can't be used until its email is verified.
       res.status(201).json({ verificationRequired: true, email: body.email });
     })
   );
 
   router.post(
     "/login",
-    authLimiter,
+    deps.ipLimiters.login,
     handler(async (req, res) => {
       const body = parseBody(z.object({ email: emailSchema, password: z.string().max(128) }), req.body);
       // D-8: at most 5 failed logins per account per 15 minutes. Keyed by the (HMAC of the) submitted email, so known
@@ -135,7 +138,7 @@ export function authRouter(db: Db, deps: AppDeps) {
   /** Always answers the same way so it can't be used to discover which emails have accounts. */
   router.post(
     "/resend-verification",
-    authLimiter,
+    deps.ipLimiters.verification,
     handler(async (req, res) => {
       const body = parseBody(z.object({ email: emailSchema }), req.body);
       const user = byEmail.get(body.email) as UserRow | undefined;
@@ -143,7 +146,7 @@ export function authRouter(db: Db, deps: AppDeps) {
         try {
           await sendVerification(db, deps.mailer, user);
         } catch (err) {
-          console.error("[auth] resend verification failed:", (err as Error).message);
+          console.error(`[auth] resend verification failed: ${mailErrorCode(err)}`);
         }
       }
       res.status(202).json({ message: "If that account is waiting for verification, a new link is on its way." });
@@ -152,7 +155,7 @@ export function authRouter(db: Db, deps: AppDeps) {
 
   router.post(
     "/verify-email",
-    authLimiter,
+    deps.ipLimiters.verification,
     handler((req, res) => {
       const body = parseBody(z.object({ token: z.string().min(20).max(200) }), req.body);
       const userId = consumeVerification(db, body.token);
@@ -167,7 +170,7 @@ export function authRouter(db: Db, deps: AppDeps) {
 
   router.post(
     "/google",
-    authLimiter,
+    deps.ipLimiters.google,
     handler(async (req, res) => {
       if (!deps.googleClientId) throw new HttpError(503, "Google sign-in is not configured", "google_unavailable");
       const body = parseBody(z.object({ credential: z.string().min(20).max(4096) }), req.body);

@@ -1,3 +1,4 @@
+import { defaultDocumentParser } from "./analysis/document-parser.js";
 import { createApp } from "./app.js";
 import { config } from "./config.js";
 import { openDb } from "./db.js";
@@ -13,7 +14,7 @@ const server = app.listen(config.port, config.host, () => {
 function shutdown() {
   server.close(() => {
     db.close();
-    process.exit(0);
+    void defaultDocumentParser.close().finally(() => process.exit(0));
   });
 }
 process.on("SIGINT", shutdown);

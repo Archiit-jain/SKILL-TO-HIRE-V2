@@ -127,7 +127,10 @@ The repo deploys to Vercel as a static Vite site plus one serverless function:
   - on **preview** deployments, uses a per-instance random session secret if `JWT_SECRET` isn't set. The
     **production** deployment refuses to start without `JWT_SECRET` (security remediation P1), so set it in the
     Vercel project's Production environment variables before deploying `main`;
-  - limits uploads to **4 MB**, because Vercel rejects request bodies over 4.5 MB.
+  - limits uploads to **4 MB**, because Vercel rejects request bodies over 4.5 MB;
+  - parses documents in a worker thread with a 20 s deadline (P2). If the preview logs show
+    `[parse] worker unavailable: <reason>`, the worker file wasn't bundled and parsing runs on the main thread without
+    the ability to stop a slow document.
 - The frontend shows a yellow "Preview build" banner on Vercel builds only.
 
 For persistent data on Vercel, move to a hosted database (Turso/libSQL or Neon Postgres) and set `JWT_SECRET` in

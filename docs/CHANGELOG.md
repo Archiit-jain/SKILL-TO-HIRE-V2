@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — security remediation P2 and P3 (branch `security/remediation`)
+
+### Security
+- **Parse deadline (D-11):** 20 s per upload request; documents are parsed in a worker thread that is terminated at the
+  deadline (422 `file_too_complex`), with the parse slot held until the thread exits. The native canvas addon is
+  replaced by a placeholder in the worker (terminating a worker that loaded it crashed the process), and one worker is
+  used per instance (two exceeded the 1024 MB Vercel function). Falls back to in-process parsing with a reason code.
+- **Rate limits (D-8):** the shared auth limiter is split into login, sign-up, verification and Google limiters with
+  the approved values; the limiters are now testable and tested.
+- **Sign-up enumeration (D-10):** identical 201 for new and existing addresses; existing verified owners get a notice email.
+- **CSP:** `style-src` without `'unsafe-inline'` (Radix ScrollArea style allowed by hash), verified in a browser.
+- **Health (L-4):** production `/api/health` returns only `{status}`.
+- **Logs (L-5):** error classes and reason codes instead of messages that could contain emails, content or token details.
+- **Dependency audit (L-6):** `npm run audit` and a GitHub Actions workflow (audit, typecheck, tests, build).
+- **P3:** `docs/RAG-SECURITY.md` design guardrails for a future RAG feature (not implemented).
+
 ## Unreleased — security remediation P1 (branch `security/remediation`)
 
 ### Security

@@ -68,7 +68,7 @@ These were needed to make the app work. Each has alternatives; confirm or change
 | D-42 | Unverified password account + later Google sign-in with same email → Google wins, password removed | Refuse and ask user to verify first |
 | D-43 | Email change keeps the current session but requires verification before the next login | Keep old email until the new one is verified (pending-email flow) |
 | D-44 | Guest cookie lifetime 1 year; guest results kept until claimed (on Vercel they vanish with the temp DB anyway) | Shorter lifetime; periodic purge |
-| D-45 | Duplicate sign-up still returns 409 (reveals registration), as in D-20 | Always "check your email" |
+| D-45 | ~~Duplicate sign-up still returns 409 (reveals registration), as in D-20~~ → changed by SEC-D10 (P2): always the same 201; the owner is told by email | Always "check your email" |
 
 ## Deployment decisions (2026-09-13)
 
@@ -104,3 +104,16 @@ Branch `security/remediation`. IDs are prefixed `SEC-` so they don't clash with 
 | SEC-A1 | Architecture test: every prepared statement that reads, updates or deletes an owned table filters by its owner column (explicit allow-list for retention cleanup and token lookups). | `server/tests/ownership-queries.test.ts` |
 | D-43 | ~~Email change keeps the current session~~ → changed by SEC-D7: other devices are signed out, the current session is reissued. | |
 | D-44 | ~~Guest results kept until claimed~~ → changed by SEC-D6. | |
+
+### Security remediation P2 and P3 (2026-09-15)
+
+| ID | Decision | Where |
+|---|---|---|
+| SEC-D8b | Auth IP limiter split per route with the approved values: login 20/15 min, sign-up 5/h, verification + resend 10/15 min (shared), Google 20/15 min; profile/password/deletion keep the former 10/15 min; api 300/15 min, analysis 30/h, assistant 60/h unchanged | `middleware/security.ts` |
+| SEC-D10 | Sign-up gives the same 201 for new and existing addresses; verified owners get a notice email, unverified ones their verification link (cooldown applies); existing accounts are never changed | `routes/auth.ts`, `email/mailer.ts` |
+| SEC-D11 | 20 s parse deadline per upload request (the roadmap's D-11 value). Implemented as a **worker thread** that is terminated at the deadline, with `@napi-rs/canvas` replaced by an inert placeholder inside the worker (native addon + terminate crashed the process), and **one** worker per instance (two workers exceeded 1024 MB). In-process fallback with a reason code if the worker can't start | `analysis/document-parser.ts`, `analysis/parse-worker.ts`, `analysis/canvas-placeholder.cjs` |
+| SEC-L4 | Production `/api/health` returns only `{status}` | `app.ts` |
+| SEC-L5 | Logs carry reason codes/error classes only (no messages that could contain emails, document text or token details) | `app.ts`, `extract.ts`, `auth.ts`, `account.ts`, `google.ts`, `email-check.ts` |
+| SEC-L6 | `npm run audit` (`--audit-level=high`) plus a GitHub Actions workflow running audit, typecheck, tests and build | `package.json`, `.github/workflows/security.yml` |
+| SEC-CSP | `style-src` without `'unsafe-inline'`; Radix ScrollArea's style allowed by SHA-256 hash (server and vercel.json) | `middleware/security.ts`, `vercel.json` |
+| SEC-P3 | RAG security guardrails written as a design document only; RAG is not implemented | `docs/RAG-SECURITY.md` |

@@ -11,7 +11,7 @@ Runner: Node's built-in `node:test` via `tsx`, HTTP tests via `supertest`, in-me
 never called: tests inject fake phrasers and need no API key. Fixtures in `server/tests/fixtures.ts` are **synthetic** (not real people) and include a
 generator for a minimal valid PDF.
 
-**Result on 2026-09-15 (security remediation P1): 196 tests, 37 suites, 196 passed, 0 failed.** `npm run typecheck`, `npm run build` and `npm audit --audit-level=high` (0 vulnerabilities) also pass.
+**Result on 2026-09-15 (security remediation P2 + P3): 220 tests, 44 suites, 220 passed, 0 failed.** `npm run typecheck`, `npm run build` and `npm run audit` (0 vulnerabilities) also pass.
 
 | Suite | Tests | Covers |
 |---|---|---|
@@ -39,6 +39,8 @@ generator for a minimal valid PDF.
 | D-9 Gemini (`gemini-guard.test.ts`, 4 suites) | 18 | Redaction regardless of privacy mode, no file name, JSON boundary, validation (STOP, length, links, numbers, ratings, quotes), 20/user and 500/global quotas, atomic concurrency, UTC rollover, retry counts once, fallback with reason-code-only logs, stored analysis unchanged, exact disclosure |
 | M-8 JWT secret (`config-secret.test.ts`) | 4 | Vercel production and NODE_ENV=production refuse a missing secret; preview and tests keep working |
 | ownership queries (`ownership-queries.test.ts`) | 5 | Every prepared statement on an owned table filters by its owner (TypeScript AST scan, literal SQL only, allow-list can't go stale, the rule catches IDOR-shaped queries) |
+| D-11 parse deadline (`parse-deadline.test.ts`, 2 suites) | 7 | 20 s deadline and one worker; normal PDF/DOCX parsed in the worker (which refuses to start if the native canvas addon loaded); a slow PDF stopped at its deadline and the worker exits, then a fresh worker works; queue time counts; in-process fallback with reason code; route answers 422, releases the slot after the worker exits, doesn't use the guest's free analysis; one deadline for resume + JD file |
+| P2 hardening (`p2-hardening.test.ts`, 5 suites) | 17 | Split IP limits (login 20, sign-up 5, verification 10 shared, Google 20, analysis 30), spoofed X-Forwarded-For ignored, limiters off by default in tests; identical sign-up responses for new/unverified/verified addresses without changing accounts; notice email has no action link; production `/api/health` is `{status}` only; CSP hash equals the installed Radix style and vercel.json matches, no `unsafe-inline`; logs contain no mail messages, emails or document text |
 | upload safety (P0) (`api.test.ts`) | 6 | Approved SEC-D5 values; 503 `server_busy` + `Retry-After: 5` without using a guest's free analysis; slot released after rejections; DOCX and PDF bombs rejected for guests, users and as JD files with nothing stored; encrypted PDF message |
 
 Other checks run:
@@ -47,7 +49,9 @@ Other checks run:
 |---|---|---|
 | Type-check (frontend + backend) | `npm run typecheck` | Pass |
 | Production build | `npm run build` | Pass (JS 278 kB / 83 kB gzip) |
-| Dependency audit | `npm audit` | 0 vulnerabilities |
+| Dependency audit | `npm run audit` (`npm audit --audit-level=high`, also in CI) | 0 vulnerabilities |
+| CI | `.github/workflows/security.yml` | Runs `npm ci`, audit, typecheck, tests and a production build on every push and pull request |
+| CSP in a real browser (P2) | Production build on a local port, logged in, Career Assistant with messages | Radix ScrollArea style applied, no CSP violations, no `unsafe-inline` |
 | Production-mode smoke test | `NODE_ENV=production` server on a test port | `/` serves the built SPA, CSP + HSTS present, `/api/health` ok |
 
 ## Manual end-to-end (browser) — performed 2026-09-13

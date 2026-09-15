@@ -6,7 +6,7 @@ import type { Db } from "../db.js";
 import type { AppDeps } from "../deps.js";
 import { handler, HttpError, parseBody } from "../http.js";
 import { requireAuth } from "../middleware/auth.js";
-import { assistantLimiter, rateLimited } from "../middleware/security.js";
+import { rateLimited } from "../middleware/security.js";
 import { loadAnalysis } from "./analyses.js";
 
 export function assistantRouter(db: Db, deps: AppDeps) {
@@ -19,7 +19,7 @@ export function assistantRouter(db: Db, deps: AppDeps) {
 
   router.post(
     "/chat",
-    assistantLimiter,
+    deps.ipLimiters.assistant,
     handler(async (req, res) => {
       // D-8: at most 60 assistant requests per user per hour, on top of the per-IP limit and the Gemini daily quota.
       const waitSeconds = deps.assistantRequests.tryConsume(req.user!.id);
