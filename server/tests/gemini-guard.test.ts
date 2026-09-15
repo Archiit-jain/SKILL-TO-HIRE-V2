@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { analyze } from "../src/analysis/analyze.js";
 import type { AnalysisResult } from "../src/analysis/types.js";
-import { answerFromAnalysis } from "../src/assistant/engine.js";
+import { answer, answerFromAnalysis } from "../src/assistant/engine.js";
 import { buildGeminiPayload, SYSTEM_INSTRUCTION, type GeminiPhraser, type GeminiRequest, type GeminiResponse } from "../src/assistant/gemini.js";
 import { utcDay } from "../src/assistant/quota.js";
 import { MAX_GEMINI_ANSWER_CHARS, validateGeminiAnswer } from "../src/assistant/validate.js";
@@ -189,17 +189,29 @@ describe("D-9 through the API: quotas, fallback, logging", () => {
   });
 
   it("reserves quota atomically under concurrent requests", async () => {
-    const { ctx, calls } = await setup(async (req) => {
+    // 30 answers run concurrently against the same database. Called through answer() rather than 30 parallel HTTP
+    // connections, which were reset on the Linux CI runner (a transport issue unrelated to the quota logic).
+    const { ctx, calls, phraser } = await setup(async (req) => {
       await new Promise((r) => setTimeout(r, 5));
       return echoDraft(req);
     });
-    const { agent } = await userWithAnalysis(ctx, "concurrent@example.com");
-    const replies = await Promise.all(Array.from({ length: 30 }, () => chat(agent)));
-    assert.ok(replies.every((r) => r.status === 200));
-    assert.equal(replies.filter((r) => r.body.mode === "gemini").length, 20);
-    assert.equal(calls.length, 20);
+    const { agent, id } = await userWithAnalysis(ctx, "concurrent@example.com");
+    const stored = (await agent.get(`/api/analyses/${id}`)).body.result as AnalysisResult;
     const userId = (ctx.db.prepare("SELECT id FROM users WHERE email = 'concurrent@example.com'").get() as { id: string }).id;
+    const quota = { perUserPerDay: 20, globalPerDay: 500 };
+    const replies = await Promise.all(
+      Array.from({ length: 30 }, () =>
+        answer("What skills should I improve first?", stored, { db: ctx.db, userId, gemini: phraser, quota, now: new Date() })
+      )
+    );
+    assert.equal(replies.filter((r) => r.mode === "gemini").length, 20);
+    assert.equal(replies.filter((r) => r.mode === "rules").length, 10);
+    assert.equal(calls.length, 20);
     assert.equal((ctx.db.prepare("SELECT count FROM assistant_usage WHERE user_id = ?").get(userId) as { count: number }).count, 20);
+
+    // The HTTP route shares the same counter: a further chat is past the quota.
+    assert.equal((await chat(agent)).body.mode, "rules");
+    assert.equal(calls.length, 20);
   });
 
   it("resets at UTC midnight and deletes earlier days' counters", async () => {
