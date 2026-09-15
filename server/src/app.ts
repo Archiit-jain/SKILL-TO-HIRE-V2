@@ -12,6 +12,7 @@ import { accountRouter } from "./routes/account.js";
 import { analysesRouter } from "./routes/analyses.js";
 import { assistantRouter } from "./routes/assistant.js";
 import { authRouter } from "./routes/auth.js";
+import { demoRouter } from "./routes/demo.js";
 
 export function createApp(db: Db, overrides: Partial<AppDeps> = {}) {
   const deps = defaultDeps(overrides);
@@ -32,12 +33,13 @@ export function createApp(db: Db, overrides: Partial<AppDeps> = {}) {
 
   api.get("/health", (_req, res) => {
     // L-4 (P2): production answers only {status}; assistant mode and storage details are for development and tests.
-    res.json(deps.healthDetails ? { status: "ok", assistant: deps.gemini ? "gemini" : "rules", ephemeralStorage: config.onVercel } : { status: "ok" });
+    res.json(deps.healthDetails ? { status: "ok", assistant: deps.gemini ? "gemini" : "rules", persistentStorage: db.persistent } : { status: "ok" });
   });
   api.use("/auth", authRouter(db, deps));
   api.use("/account", accountRouter(db, deps));
   api.use("/analyses", analysesRouter(db, deps));
   api.use("/assistant", assistantRouter(db, deps));
+  api.use("/demo", demoRouter(deps));
   api.use((_req, _res, next) => next(new HttpError(404, "Not found", "not_found")));
   app.use("/api", api);
 

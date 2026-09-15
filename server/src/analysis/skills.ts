@@ -1,6 +1,8 @@
 /**
  * Curated skill dictionary. A skill is only recognised if one of its aliases appears as a whole token.
  * Ambiguous short names (R, Go, C) are only matched through unambiguous phrasings to avoid false positives.
+ * An alias must mean the same skill: related but different technologies (Git and GitHub, Docker and Kubernetes,
+ * SQL and PostgreSQL, OAuth and JWT) are separate skills, linked only through RELATED below, which never gives credit.
  * Extend this list freely - see docs/SCORING.md.
  */
 export interface SkillDef {
@@ -91,12 +93,12 @@ export const SKILLS: SkillDef[] = [
   S("Elasticsearch", "database", "Elastic Search", "OpenSearch"),
   S("Firebase", "database", "Firestore"),
   // Cloud
-  S("AWS", "cloud", "Amazon Web Services", "EC2", "S3", "Lambda", "AWS Lambda"),
+  S("AWS", "cloud", "Amazon Web Services", "EC2", "S3", "AWS Lambda"),
   S("Azure", "cloud", "Microsoft Azure"),
   S("Google Cloud", "cloud", "GCP", "Google Cloud Platform", "BigQuery"),
   S("Serverless", "cloud"),
   // DevOps
-  S("Docker", "devops", "containerization", "containerized", "Dockerfile"),
+  S("Docker", "devops", "Dockerfile", "Docker Compose"),
   S("Kubernetes", "devops", "K8s", "kubectl", "Helm", "EKS", "AKS", "GKE"),
   S("Terraform", "devops"),
   S("Ansible", "devops"),
@@ -104,7 +106,8 @@ export const SKILLS: SkillDef[] = [
   S("Jenkins", "devops"),
   S("GitHub Actions", "devops"),
   S("GitLab CI", "devops"),
-  S("Linux", "devops", "Unix", "Ubuntu"),
+  S("Linux", "devops", "Ubuntu", "Debian", "CentOS"),
+  S("Unix", "devops"),
   S("Nginx", "devops"),
   S("Prometheus", "devops"),
   S("Grafana", "devops"),
@@ -147,13 +150,17 @@ export const SKILLS: SkillDef[] = [
   S("Unit Testing", "testing", "unit tests", "Jest", "JUnit", "pytest", "Mocha", "Vitest"),
   S("Test Automation", "testing", "Selenium", "Cypress", "Playwright"),
   // Tools
-  S("Git", "tools", "GitHub", "GitLab", "Bitbucket", "version control"),
+  S("Git", "tools"),
+  S("GitHub", "tools"),
+  S("GitLab", "tools"),
+  S("Bitbucket", "tools"),
   S("Jira", "tools"),
   S("Figma", "tools"),
   S("Postman", "tools"),
   // Security
   S("Cybersecurity", "security", "information security", "network security"),
-  S("OAuth", "security", "OAuth2", "OpenID Connect", "JWT"),
+  S("OAuth", "security", "OAuth2", "OAuth 2.0", "OpenID Connect", "OIDC"),
+  S("JWT", "security", "JSON Web Token", "JSON Web Tokens"),
   S("OWASP", "security"),
   // Practices
   S("Agile", "practice", "Scrum", "Kanban"),
@@ -177,6 +184,115 @@ const CASE_SENSITIVE = new Set([
 // Aliases so generic that they are never matched on their own. The canonical name is kept as a display label only.
 const NEVER_MATCH_ALONE = new Set(["C", "R", "Go"]);
 
+/**
+ * Case-sensitive aliases that are still ordinary English words when capitalised ("Swift delivery", "Spark interest").
+ * A line that matches a skill only through one of these, with no other recognised skill on the same line, is weak
+ * evidence: the rating is kept but marked low confidence.
+ */
+const WORD_LIKE = new Set([
+  "Swift", "Rust", "Dart", "Spark", "Excel", "Bootstrap", "Snowflake", "Jest", "Mocha", "Cypress", "Playwright",
+  "Flutter", "Angular", "Azure", "Torch", "Transformers", "Helm", "Node", "Rails", "Vue", "Mongo", "Tableau", "Jenkins",
+  "REST", "Unix",
+]);
+
+/**
+ * Different-but-related skills. When a job description asks for the key skill and the resume only shows a related one,
+ * the result says so, but the skill stays Missing: related experience is never counted as a match.
+ */
+export const RELATED: Record<string, Array<{ skill: string; note: string }>> = (() => {
+  const map: Record<string, Array<{ skill: string; note: string }>> = {};
+  const add = (key: string, skills: string[], note: string) => {
+    map[key] = [...(map[key] ?? []), ...skills.map((skill) => ({ skill, note }))];
+  };
+  add("Git", ["GitHub", "GitLab", "Bitbucket"], "is a hosting platform for Git repositories; naming it doesn't show that you use Git itself");
+  for (const host of ["GitHub", "GitLab", "Bitbucket"]) add(host, ["Git"], "is the version control tool; it doesn't show which hosting platform you use");
+  add("Docker", ["Kubernetes"], "orchestrates containers, but isn't evidence of building or running Docker images");
+  add("Kubernetes", ["Docker"], "builds and runs containers; orchestrating them with Kubernetes is a separate skill");
+  add("JavaScript", ["TypeScript", "React", "Node.js", "Next.js", "Vue.js", "Angular"], "is built on JavaScript, but isn't the same as JavaScript experience");
+  add("TypeScript", ["JavaScript"], "is related, but TypeScript adds a type system you'd need to show separately");
+  add("React", ["Next.js", "React Native", "JavaScript"], "is related to React, but isn't React web development itself");
+  const sqlDatabases = ["PostgreSQL", "MySQL", "SQLite", "SQL Server", "Oracle Database"];
+  add("SQL", sqlDatabases, "is a database that uses SQL; say explicitly that you write SQL if you do");
+  for (const db of sqlDatabases) add(db, ["SQL", ...sqlDatabases.filter((d) => d !== db)], "is related, but general SQL or another database doesn't show this specific database");
+  add("C", ["C++"], "is a different language from C");
+  add("C++", ["C", "C#"], "is a different language from C++");
+  add("C#", ["C++", "Java"], "is a different language from C#");
+  add("Java", ["Kotlin", "Scala"], "also runs on the JVM, but is a different language from Java");
+  for (const [cloud, others] of [["AWS", ["Azure", "Google Cloud"]], ["Azure", ["AWS", "Google Cloud"]], ["Google Cloud", ["AWS", "Azure"]]] as const) {
+    add(cloud, [...others], "is a different cloud provider");
+  }
+  add("Deep Learning", ["TensorFlow", "PyTorch"], "is a deep learning framework; describe the models you built to show deep learning");
+  add("CI/CD", ["GitHub Actions", "Jenkins", "GitLab CI"], "is a CI/CD tool; describe the pipeline you set up to show CI/CD");
+  for (const tool of ["GitHub Actions", "Jenkins", "GitLab CI"]) add(tool, ["CI/CD", ...["GitHub Actions", "Jenkins", "GitLab CI"].filter((t) => t !== tool)], "is related, but isn't this specific CI/CD tool");
+  add("Terraform", ["Ansible"], "is a different infrastructure automation tool");
+  add("Ansible", ["Terraform"], "is a different infrastructure automation tool");
+  add("Linux", ["Unix"], "is a related operating system family, not Linux itself");
+  add("Unix", ["Linux"], "is a Unix-like system, but not the same as Unix experience");
+  add("OAuth", ["JWT"], "is a token format; it isn't the OAuth authorisation protocol");
+  add("JWT", ["OAuth"], "is an authorisation protocol; it doesn't show JWT handling by itself");
+  add("Apache Spark", ["Hadoop"], "is a different big-data framework");
+  add("Hadoop", ["Apache Spark"], "is a different big-data framework");
+  add("REST APIs", ["GraphQL", "gRPC"], "is a different API style");
+  add("GraphQL", ["REST APIs"], "is a different API style");
+  add("Express.js", ["Node.js"], "is the runtime; it doesn't show the Express framework");
+  add("Node.js", ["Express.js"], "runs on Node.js, but the runtime itself should be named");
+  add("Pandas", ["NumPy"], "is a related library, but not Pandas");
+  add("NumPy", ["Pandas"], "is a related library, but not NumPy");
+  add("Tableau", ["Power BI"], "is a different BI tool");
+  add("Power BI", ["Tableau"], "is a different BI tool");
+  add("Machine Learning", ["Data Analysis", "Statistics"], "is related groundwork, but isn't machine learning");
+  return map;
+})();
+
+/** Skills that are usually learned first. Used to order the roadmap; never used for scoring. */
+export const PREREQUISITES: Record<string, string[]> = {
+  Kubernetes: ["Docker", "Linux"],
+  Docker: ["Linux"],
+  React: ["JavaScript", "HTML", "CSS"],
+  "Next.js": ["React"],
+  Redux: ["React"],
+  "React Native": ["React"],
+  "Vue.js": ["JavaScript"],
+  Angular: ["TypeScript"],
+  TypeScript: ["JavaScript"],
+  "Node.js": ["JavaScript"],
+  "Express.js": ["Node.js"],
+  Django: ["Python"],
+  Flask: ["Python"],
+  FastAPI: ["Python"],
+  Pandas: ["Python"],
+  NumPy: ["Python"],
+  "Scikit-learn": ["Python", "Machine Learning"],
+  "Machine Learning": ["Python", "Statistics"],
+  "Deep Learning": ["Machine Learning"],
+  TensorFlow: ["Deep Learning"],
+  PyTorch: ["Deep Learning"],
+  "Natural Language Processing": ["Machine Learning"],
+  "Computer Vision": ["Deep Learning"],
+  LangChain: ["Python", "Large Language Models"],
+  RAG: ["Large Language Models"],
+  MLOps: ["Machine Learning", "Docker"],
+  "Apache Spark": ["Python", "SQL"],
+  Airflow: ["Python"],
+  dbt: ["SQL"],
+  "Data Warehousing": ["SQL"],
+  PostgreSQL: ["SQL"],
+  MySQL: ["SQL"],
+  "SQL Server": ["SQL"],
+  "Oracle Database": ["SQL"],
+  "GitHub Actions": ["Git", "CI/CD"],
+  "GitLab CI": ["Git", "CI/CD"],
+  Jenkins: ["CI/CD"],
+  "CI/CD": ["Git"],
+  "Spring Boot": ["Java"],
+  ".NET": ["C#"],
+  Laravel: ["PHP"],
+  "Ruby on Rails": ["Ruby"],
+  Flutter: ["Dart"],
+  Microservices: ["REST APIs", "Docker"],
+  "System Design": ["Data Structures"],
+};
+
 function escapeRe(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -193,22 +309,36 @@ function buildPattern(aliases: string[], flags: string): RegExp | null {
 
 export interface CompiledSkill extends SkillDef {
   patterns: RegExp[];
+  /** Case-sensitive aliases that are also ordinary words (see WORD_LIKE). */
+  wordLikePattern: RegExp | null;
 }
 
 export const COMPILED_SKILLS: CompiledSkill[] = SKILLS.map((def) => {
   const usable = def.aliases.filter((a) => !NEVER_MATCH_ALONE.has(a));
   const patterns = [
     buildPattern(usable.filter((a) => !CASE_SENSITIVE.has(a)), "gi"),
-    buildPattern(usable.filter((a) => CASE_SENSITIVE.has(a)), "g"),
+    buildPattern(usable.filter((a) => CASE_SENSITIVE.has(a) && !WORD_LIKE.has(a)), "g"),
   ].filter((p): p is RegExp => p !== null);
-  return { ...def, patterns };
+  return { ...def, patterns, wordLikePattern: buildPattern(usable.filter((a) => CASE_SENSITIVE.has(a) && WORD_LIKE.has(a)), "g") };
 });
 
+const test = (p: RegExp, text: string) => {
+  p.lastIndex = 0;
+  return p.test(text);
+};
+
 export function mentionsSkill(skill: CompiledSkill, text: string): boolean {
-  return skill.patterns.some((p) => {
-    p.lastIndex = 0;
-    return p.test(text);
-  });
+  return skill.patterns.some((p) => test(p, text)) || (!!skill.wordLikePattern && test(skill.wordLikePattern, text));
+}
+
+/**
+ * True when `text` mentions the skill only through an alias that is also an ordinary word, and nothing else on the line
+ * is a recognised skill - e.g. "Swift turnaround on support tickets". "Built iOS apps in Swift" is not ambiguous.
+ */
+export function isAmbiguousMention(skill: CompiledSkill, text: string): boolean {
+  if (skill.patterns.some((p) => test(p, text))) return false;
+  if (!skill.wordLikePattern || !test(skill.wordLikePattern, text)) return false;
+  return !COMPILED_SKILLS.some((other) => other !== skill && other.patterns.some((p) => test(p, text)));
 }
 
 export function findSkills(text: string): Set<string> {
@@ -226,3 +356,20 @@ export function getSkill(name: string): CompiledSkill {
 export function skillCategory(name: string): SkillCategory | undefined {
   return SKILLS.find((k) => k.name === name)?.category;
 }
+
+export const CATEGORY_LABEL: Record<SkillCategory, string> = {
+  language: "Programming language",
+  frontend: "Frontend",
+  backend: "Backend",
+  database: "Database",
+  cloud: "Cloud",
+  devops: "DevOps",
+  data: "Data",
+  ai_ml: "AI / ML",
+  mobile: "Mobile",
+  testing: "Testing",
+  tools: "Tools",
+  security: "Security",
+  practice: "Engineering practice",
+  soft: "Soft skill",
+};

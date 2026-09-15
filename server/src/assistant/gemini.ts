@@ -86,8 +86,12 @@ export interface GeminiPayload {
     overallScore: number;
     components: AnalysisResult["components"];
     notAssessed: string[];
-    skills: Array<Pick<AnalysisResult["strongSkills"][number], "skill" | "status" | "requirementType" | "section" | "evidence">>;
+    skills: Array<
+      Pick<AnalysisResult["strongSkills"][number], "skill" | "status" | "requirementType" | "section" | "evidence" | "jdEvidence" | "reason" | "confidence">
+    >;
     whyNotMe: AnalysisResult["whyNotMe"];
+    confidence?: AnalysisResult["confidence"];
+    recommendations?: Array<Pick<AnalysisResult["recommendations"][number], "priority" | "target" | "gap" | "action" | "impactPoints">>;
   };
   draft_answer: string;
   user_question: string;
@@ -110,8 +114,13 @@ export function buildGeminiPayload(question: string, result: AnalysisResult, dra
         requirementType: s.requirementType,
         section: s.section,
         evidence: s.evidence,
+        jdEvidence: s.jdEvidence,
+        reason: s.reason,
+        confidence: s.confidence,
       })),
       whyNotMe: result.whyNotMe,
+      confidence: result.confidence,
+      recommendations: result.recommendations?.map((r) => ({ priority: r.priority, target: r.target, gap: r.gap, action: r.action, impactPoints: r.impactPoints })),
     },
     draft_answer: draft,
     user_question: question,

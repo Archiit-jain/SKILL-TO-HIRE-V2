@@ -149,7 +149,7 @@ describe("P2 /api/health exposure (L-4)", () => {
 
   it("development/test keep the diagnostic fields, and production is the default when isProd", async () => {
     const res = await request((await testApp()).app).get("/api/health");
-    assert.deepEqual(Object.keys(res.body).sort(), ["assistant", "ephemeralStorage", "status"]);
+    assert.deepEqual(Object.keys(res.body).sort(), ["assistant", "persistentStorage", "status"]);
     assert.equal(config.isProd, false);
   });
 });
