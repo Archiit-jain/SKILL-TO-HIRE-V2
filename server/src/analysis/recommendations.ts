@@ -124,7 +124,9 @@ export function buildRecommendations(input: RecommendationInput): Recommendation
         action: technical
           ? `Describe a real task where you used ${s.skill} in an Experience or Projects bullet. If there isn't one yet, ${practiceFor(s.skill)}.`
           : `Show ${s.skill} through a real situation in an Experience or Projects bullet instead of only listing it. If you need one, ${practiceFor(s.skill)}.`,
-        evidenceToAdd: `A bullet under Experience or Projects that names ${s.skill}, e.g. "<Action verb> <what> with ${s.skill}, <result>".`,
+        evidenceToAdd: technical
+          ? `A bullet under Experience or Projects that names ${s.skill}, e.g. "<Action verb> <what> with ${s.skill}, <result>".`
+          : `A bullet under Experience or Projects that shows ${s.skill} in a real situation, e.g. "<situation> - <what you did> - <result>".`,
         impactPoints,
         impactNote: impactText(impactPoints, parts),
       });
@@ -186,7 +188,7 @@ export function buildRecommendations(input: RecommendationInput): Recommendation
       target: c.skill ? `${c.skill} certification` : "Certification",
       requirementType: c.requirementType,
       group: "other",
-      whyItMatters: `The job description mentions a ${name}${c.requirementType === "preferred" ? " as a plus" : ""}.`,
+      whyItMatters: `The job description mentions ${/^[aeiou]/i.test(name) ? "an" : "a"} ${name}${c.requirementType === "preferred" ? " as a plus" : ""}.`,
       jdEvidence: c.jdEvidence,
       currentEvidence: c.courseOnly ? "A related course is listed, but not a certification." : null,
       gap: c.courseOnly ? "A course is listed, which isn't the certification itself." : `No ${name} was found.`,

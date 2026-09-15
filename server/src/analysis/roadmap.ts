@@ -54,7 +54,12 @@ function stepsFor(s: SkillStatus, prerequisites: string[], unmentionedPrereqs: s
   }
   return [
     { phase: "learn", text: `You already list ${s.skill}. Refresh the parts the job description emphasises: ${quote(s.jdEvidence)}${/[.!?]$/.test(s.jdEvidence) ? "" : "."} ${builds}`.trim() },
-    { phase: "build", text: `Use ${s.skill} in a real task at work or in an internship, or ${practiceFor(s.skill)}.` },
+    {
+      phase: "build",
+      text: soft
+        ? `Show ${s.skill} in a real situation: at work, in an internship, a team project or a club role.`
+        : `Use ${s.skill} in a real task at work or in an internship, or ${practiceFor(s.skill)}.`,
+    },
     { phase: "demonstrate", text: `Move it from your ${s.section ?? "skills"} list into an Experience or Projects bullet that shows it in use.` },
     { phase: "document", text: "Say what you did and what came of it, using only real results." },
     reanalyze,
