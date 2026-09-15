@@ -88,3 +88,19 @@ Branch `security/remediation`. IDs are prefixed `SEC-` so they don't clash with 
 | SEC-D3 | PDF caps: Flate 10 MB per stream, 30 MB per document; reject encrypted PDFs, LZW, RunLength, ASCII85/ASCIIHex, unsupported and chained filters → `422 file_too_complex` | P0 | `config.upload`, `analysis/pdf-guard.ts` |
 | SEC-D5 | At most 2 simultaneous document parses per instance → `503 server_busy`, `Retry-After: 5` (password-hash slots follow in P1) | P0 | `config.upload`, `analysis/parse-slots.ts` |
 | SEC-R5 | Encrypted PDFs get the specific message "Encrypted or password-protected PDFs aren't supported. Please upload an unprotected PDF." | P0 | `analysis/pdf-guard.ts` |
+
+### Security remediation P1 (approved by the owner, 2026-09-14)
+
+| ID | Decision | Where |
+|---|---|---|
+| SEC-D1 | Preview-only on Vercel with per-instance `/tmp` SQLite; documented that data may reset and isn't shared across instances. No hosted database. | `SECURITY.md`, `SETUP.md` |
+| SEC-D4 | Over-limit text/pages are rejected (`422 document_too_long`): resume > 100,000 characters, JD > 50,000, PDF > 20 pages (page count checked before text extraction). No silent truncation. Pasted JD over the limit moved from 400 to 422. | `analysis/extract.ts`, `routes/analyses.ts` |
+| SEC-D5b | At most 2 concurrent scrypt operations; 5 s wait, then `503 server_busy` + `Retry-After: 5`. scrypt parameters unchanged. | `security/password-slots.ts` |
+| SEC-D6 | Guest free-use marker kept 365 days, unclaimed guest results 30 days, claimed content deleted on transfer, account deletion is a hard delete; purged on normal guest requests. | `security/guest.ts`, migration 3 |
+| SEC-D7 | Sessions table with a `jti` per session: logout revokes the current session, logout-all and password change revoke all, email change revokes others and reissues the current one, Google takeover revokes the account's sessions. | `security/session.ts`, `middleware/auth.ts`, migration 3 |
+| SEC-D8 | 5 failed logins per account per 15 min (HMAC email key, identical for unknown emails), 60 assistant requests per user per hour; existing IP limits kept. | `security/fixed-window.ts`, `routes/auth.ts`, `routes/assistant.ts` |
+| SEC-D9 | Gemini kept on for the preview: 20 answers/user and 500/global per UTC day reserved before the call (retry = same unit, rejected output still counts), silent rules fallback, mandatory contact-detail redaction, JSON payload with an untrusted-data instruction, output validation (STOP, ≤ 4,000 chars, no links, numbers, ratings, quotes), exact Assistant disclosure. | `assistant/*.ts`, `AssistantPage.tsx`, migration 3 |
+| SEC-M8 | `NODE_ENV=production` and the Vercel production deployment refuse to start without `JWT_SECRET`. | `config.ts` |
+| SEC-A1 | Architecture test: every prepared statement that reads, updates or deletes an owned table filters by its owner column (explicit allow-list for retention cleanup and token lookups). | `server/tests/ownership-queries.test.ts` |
+| D-43 | ~~Email change keeps the current session~~ → changed by SEC-D7: other devices are signed out, the current session is reissued. | |
+| D-44 | ~~Guest results kept until claimed~~ → changed by SEC-D6. | |

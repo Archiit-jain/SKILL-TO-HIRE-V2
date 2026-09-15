@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — security remediation P1 (branch `security/remediation`)
+
+### Security
+- **Migration 3:** `guest_free_use`, `sessions`, `assistant_usage`, `assistant_usage_global`; claimed guest rows deleted.
+- **D-4:** resume text over 100,000 characters, JD text over 50,000 and PDFs over 20 pages are rejected with
+  `422 document_too_long` instead of being silently truncated or partly read.
+- **D-5:** at most 2 concurrent scrypt operations; 5 s wait, then `503 server_busy`.
+- **D-6:** guest free-use marker (365 days), 30-day guest results, claim deletes guest content (fixes H-2).
+- **D-7:** database-backed sessions with a `jti`; logout revokes the copied token immediately (fixes M-1); email
+  change signs out other devices (L-1).
+- **D-8:** 5 failed logins per account per 15 min; 60 assistant requests per user per hour.
+- **D-9:** Gemini quotas (20/user, 500/global per UTC day), mandatory contact-detail redaction, JSON payload with an
+  untrusted-data instruction, output validation with rules fallback, reason-code-only logging, Assistant disclosure.
+- **M-8:** the Vercel production deployment refuses to start without `JWT_SECRET`.
+- Login runs a real scrypt comparison for Google-only accounts too, so they can't be told apart by timing.
+- Architecture test for owner-scoped SQL.
+- **Deploy note:** every user logs in once after deployment (old tokens have no `jti`); set `JWT_SECRET` for Vercel
+  production before merging to `main`.
+
 ## Unreleased — security remediation P0 (branch `security/remediation`)
 
 ### Security

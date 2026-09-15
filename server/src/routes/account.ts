@@ -6,7 +6,7 @@ import { handler, HttpError, parseBody } from "../http.js";
 import { NO_PASSWORD, publicUser, requireAuth, type UserRow } from "../middleware/auth.js";
 import { authLimiter } from "../middleware/security.js";
 import { hashPassword, verifyPassword } from "../security/password.js";
-import { clearSessionCookie, setSessionCookie, signSession } from "../security/session.js";
+import { clearSessionCookie, createSession, revokeAllSessions, setSessionCookie } from "../security/session.js";
 import { sendVerification } from "../security/verification.js";
 import { assertAcceptableEmail, emailSchema, nameSchema, passwordSchema } from "./auth.js";
 
@@ -76,6 +76,9 @@ export function accountRouter(db: Db, deps: AppDeps) {
           now,
           user.id
         );
+        // D-7: other devices are signed out; this device gets a fresh session.
+        revokeAllSessions(db, user.id);
+        setSessionCookie(res, createSession(db, user.id, user.token_version));
         await sendVerification(db, deps.mailer, { id: user.id, name: body.name, email: body.email }).catch((err) =>
           console.error("[account] verification email failed:", (err as Error).message)
         );
@@ -107,7 +110,9 @@ export function accountRouter(db: Db, deps: AppDeps) {
       db.prepare(
         "UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?"
       ).run(hash, new Date().toISOString(), user.id);
-      setSessionCookie(res, signSession(user.id, user.token_version + 1));
+      // D-7: every session is revoked (rows deleted and token version bumped); this device gets a new session.
+      revokeAllSessions(db, user.id);
+      setSessionCookie(res, createSession(db, user.id, user.token_version + 1));
       res.status(204).end();
     })
   );

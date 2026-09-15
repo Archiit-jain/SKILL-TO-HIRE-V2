@@ -6,11 +6,12 @@
 npm test
 ```
 
-Runner: Node's built-in `node:test` via `tsx`, HTTP tests via `supertest`, in-memory SQLite, rate limits disabled
-(`NODE_ENV=test`). Fixtures in `server/tests/fixtures.ts` are **synthetic** (not real people) and include a
+Runner: Node's built-in `node:test` via `tsx`, HTTP tests via `supertest`, in-memory SQLite, IP rate limits disabled
+(`NODE_ENV=test`; the P1 per-account/per-user limits stay active and are tested with injected clocks). Gemini is
+never called: tests inject fake phrasers and need no API key. Fixtures in `server/tests/fixtures.ts` are **synthetic** (not real people) and include a
 generator for a minimal valid PDF.
 
-**Result on 2026-09-14 (security remediation P0): 117 tests, 23 suites, 117 passed, 0 failed.**
+**Result on 2026-09-15 (security remediation P1): 196 tests, 37 suites, 196 passed, 0 failed.** `npm run typecheck`, `npm run build` and `npm audit --audit-level=high` (0 vulnerabilities) also pass.
 
 | Suite | Tests | Covers |
 |---|---|---|
@@ -29,6 +30,15 @@ generator for a minimal valid PDF.
 | analyses (signed in) | 7 | PDF + pasted JD, TXT JD, spoofed/oversize/missing input, history, cross-user isolation, assistant, delete |
 | DOCX guard (`docx-guard.test.ts`, 4 suites) | 25 | Approved caps; valid DOCX still extracts; XML part/total/archive/entry caps incl. exact-cap acceptance; the audit's C-1 shape rejected before mammoth; size lies (H-1), CRC and stored-size mismatches; ZIP64, split, encrypted, bzip2/lzma, duplicate names, Unicode Path field; relationship-aware XML caps (renamed, absolute and image-typed targets); DOCTYPE/ENTITY in UTF-8/UTF-16LE/BE; malformed archives → `file_corrupt` |
 | PDF guard (`pdf-guard.test.ts`, 5 suites) | 31 | Approved caps; normal and Flate PDFs still extract; exact-cap acceptance; image codecs; inline images (R-3); per-stream and total caps; the audit's C-2 shape rejected before pdf.js; fake `endstream`, short/indirect `/Length`, escaped names; encrypted PDFs incl. escaped `/Encrypt`; every rejected filter; corrupt Flate; malformed PDFs; linear time on hostile token soup |
+| migration 3 (`migration.test.ts`) | 5 | Fresh DB at v3 with exact schema, v2 file upgrade (markers backfilled before claimed rows deleted), runs once, failed migration rolls back, cascades and constraints |
+| D-4 text/page limits (`text-limits.test.ts`, 2 suites) | 11 | Resume 100,000/100,001, pasted and file JD 50,000/50,001, no truncation, PDF 20/21 pages with the page count checked before text extraction |
+| D-5 password slots (`password-slots.test.ts`) | 7 | Approved values and unchanged scrypt parameters, max 2 concurrent, arrival order, 5 s timeout → 503 + Retry-After, slot released on error, dummy hash covered, signup/login/password change/deletion busy responses, burst of logins |
+| D-6 guest lifecycle (`guest-lifecycle.test.ts`) | 12 | Marker instead of guest_analyses, atomic marker gate and parallel requests, claim deletes content and keeps marker, 30-day results, 365-day markers, account deletion (H-2), pre-P1 leftovers |
+| D-7 sessions (`sessions.test.ts`) | 9 | jti = session row, logout (replay, idempotent, other device), logout-all, password change, email change, Google takeover, unknown/foreign/expired/missing jti, token version, cascade and cleanup |
+| D-8 rate limits (`rate-limits.test.ts`, 2 suites) | 8 | 5 failed logins/account/15 min incl. identical unknown-email response, reset on success, parallel guesses; 60 assistant requests/user/hour with window reset |
+| D-9 Gemini (`gemini-guard.test.ts`, 4 suites) | 18 | Redaction regardless of privacy mode, no file name, JSON boundary, validation (STOP, length, links, numbers, ratings, quotes), 20/user and 500/global quotas, atomic concurrency, UTC rollover, retry counts once, fallback with reason-code-only logs, stored analysis unchanged, exact disclosure |
+| M-8 JWT secret (`config-secret.test.ts`) | 4 | Vercel production and NODE_ENV=production refuse a missing secret; preview and tests keep working |
+| ownership queries (`ownership-queries.test.ts`) | 5 | Every prepared statement on an owned table filters by its owner (TypeScript AST scan, literal SQL only, allow-list can't go stale, the rule catches IDOR-shaped queries) |
 | upload safety (P0) (`api.test.ts`) | 6 | Approved SEC-D5 values; 503 `server_busy` + `Retry-After: 5` without using a guest's free analysis; slot released after rejections; DOCX and PDF bombs rejected for guests, users and as JD files with nothing stored; encrypted PDF message |
 
 Other checks run:

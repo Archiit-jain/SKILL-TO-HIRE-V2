@@ -202,3 +202,31 @@ export function makePdfWithStreams(text: string, streams: PdfStreamSpec[] = [], 
   parts.push(Buffer.from(`${xref}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R ${opts.trailerExtra ?? ""} >>\nstartxref\n${len}\n%%EOF\n`));
   return Buffer.concat(parts);
 }
+
+/** Valid PDF with one text page per entry of `pages` (each page's lines separated by "\n"). */
+export function makeMultiPagePdf(pages: string[]): Buffer {
+  const esc = (s: string) => s.replace(/[\()]/g, (c) => "\\" + c).replace(/[^\x20-\x7e]/g, " ");
+  const fontObj = 3 + pages.length * 2;
+  const objects: string[] = ["<< /Type /Catalog /Pages 2 0 R >>", ""];
+  const kids: number[] = [];
+  pages.forEach((text, i) => {
+    const pageObj = 3 + i * 2;
+    kids.push(pageObj);
+    const stream = ["BT", "/F1 10 Tf", "12 TL", "40 800 Td", ...text.split("\n").map((l) => `(${esc(l)}) '`), "ET"].join("\n");
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Contents ${pageObj + 1} 0 R /Resources << /Font << /F1 ${fontObj} 0 R >> >> >>`);
+    objects.push(`<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`);
+  });
+  objects[1] = `<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(" ")}] /Count ${pages.length} >>`;
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  let body = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  objects.forEach((obj, i) => {
+    offsets.push(Buffer.byteLength(body, "latin1"));
+    body += `${i + 1} 0 obj\n${obj}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(body, "latin1");
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  body += offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("");
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body, "latin1");
+}

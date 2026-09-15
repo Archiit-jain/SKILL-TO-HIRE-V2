@@ -8,6 +8,19 @@ export type DocKind = "pdf" | "docx" | "txt";
 
 const EXT_KIND: Record<string, DocKind> = { ".pdf": "pdf", ".docx": "docx", ".txt": "txt" };
 
+// Security remediation P1 (D-4): documents over a limit are rejected, never silently truncated or partly read.
+export const RESUME_TOO_LONG_MESSAGE = "Your resume has more text than we can analyse (limit: 100,000 characters).";
+export const JD_TOO_LONG_MESSAGE = "The job description has more text than we can analyse (limit: 50,000 characters).";
+export const PDF_TOO_MANY_PAGES_MESSAGE = "This PDF has more than 20 pages. Please upload a shorter document.";
+
+export const documentTooLong = (message: string) => new HttpError(422, message, "document_too_long");
+
+/** Throws 422 document_too_long when `text` (already cleaned) is longer than `maxChars`. */
+export function assertTextWithinLimit(text: string, maxChars: number, message: string): string {
+  if (text.length > maxChars) throw documentTooLong(message);
+  return text;
+}
+
 /** Identify the file by its bytes, and require the extension to agree. Never trust the client MIME type. */
 export function detectKind(buffer: Buffer, filename: string, allowed: DocKind[]): DocKind {
   const ext = filename.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? "";
@@ -32,8 +45,7 @@ export function normalizeText(text: string): string {
     .replace(/[\u2022\u25CF\u25AA\u2023\u2043\uF0B7]/g, "\n• ")
     .replace(/[ \t\u00A0]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
-    .trim()
-    .slice(0, config.upload.maxExtractedChars);
+    .trim();
 }
 
 export async function extractText(buffer: Buffer, filename: string, allowed: DocKind[]): Promise<string> {
@@ -50,7 +62,11 @@ export async function extractText(buffer: Buffer, filename: string, allowed: Doc
       PDFParse.setWorker(getData());
       const parser = new PDFParse({ data: new Uint8Array(buffer), isEvalSupported: false, verbosity: 0 });
       try {
-        const result = await parser.getText({ first: config.upload.maxPdfPages });
+        // pdf-parse 2.4.5: getInfo() loads the document and reports doc.numPages without extracting any page text;
+        // getText() then reuses the same loaded document and reads every page.
+        const { total } = await parser.getInfo();
+        if (total > config.upload.maxPdfPages) throw documentTooLong(PDF_TOO_MANY_PAGES_MESSAGE);
+        const result = await parser.getText();
         raw = result.text;
       } finally {
         await parser.destroy();

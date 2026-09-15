@@ -55,12 +55,17 @@ export function csrfProtection(req: Request, _res: Response, next: NextFunction)
   next();
 }
 
+export const RATE_LIMITED_MESSAGE = "Too many requests, please try again later";
+
+/** The same 429 body every limiter uses; `retryAfterSeconds` adds a Retry-After header (per-account/per-user limits). */
+export const rateLimited = (retryAfterSeconds?: number) =>
+  new HttpError(429, RATE_LIMITED_MESSAGE, "rate_limited", retryAfterSeconds ? { "Retry-After": String(retryAfterSeconds) } : undefined);
+
 const limiterDefaults = {
   standardHeaders: "draft-8" as const,
   legacyHeaders: false,
   skip: () => config.isTest,
-  handler: (_req: Request, _res: Response, next: NextFunction) =>
-    next(new HttpError(429, "Too many requests, please try again later", "rate_limited")),
+  handler: (_req: Request, _res: Response, next: NextFunction) => next(rateLimited()),
 };
 
 export const apiLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60_000, limit: 300 });

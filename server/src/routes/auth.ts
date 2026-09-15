@@ -5,10 +5,19 @@ import type { Db } from "../db.js";
 import type { AppDeps } from "../deps.js";
 import { handler, HttpError, parseBody } from "../http.js";
 import { NO_PASSWORD, publicUser, requireAuth, type UserRow } from "../middleware/auth.js";
-import { authLimiter } from "../middleware/security.js";
+import { authLimiter, rateLimited } from "../middleware/security.js";
+import { emailKey } from "../security/fixed-window.js";
 import { claimGuestAnalyses } from "../security/guest.js";
-import { getDummyHash, hashPassword, verifyPassword } from "../security/password.js";
-import { clearSessionCookie, setSessionCookie, signSession } from "../security/session.js";
+import { getDummyHash, hashPassword, isPasswordHash, verifyPassword } from "../security/password.js";
+import {
+  clearSessionCookie,
+  createSession,
+  revokeAllSessions,
+  revokeSession,
+  SESSION_COOKIE,
+  setSessionCookie,
+  verifySession,
+} from "../security/session.js";
 import { consumeVerification, sendVerification } from "../security/verification.js";
 
 export const emailSchema = z.string().trim().toLowerCase().max(254).pipe(z.email("Enter a valid email"));
@@ -23,9 +32,9 @@ export const nameSchema = z
   .max(80, "Name is too long")
   .regex(/^[^<>\u0000-\u001F]+$/, "Name contains invalid characters");
 
-/** Starts a session and moves this browser's free guest analysis into the account. */
+/** Starts a new server-side session (D-7) and moves this browser's free guest analysis into the account (D-6). */
 export function startSession(db: Db, req: Request, res: Response, user: UserRow) {
-  setSessionCookie(res, signSession(user.id, user.token_version));
+  setSessionCookie(res, createSession(db, user.id, user.token_version));
   claimGuestAnalyses(db, req, user.id);
 }
 
@@ -95,10 +104,26 @@ export function authRouter(db: Db, deps: AppDeps) {
     authLimiter,
     handler(async (req, res) => {
       const body = parseBody(z.object({ email: emailSchema, password: z.string().max(128) }), req.body);
+      // D-8: at most 5 failed logins per account per 15 minutes. Keyed by the (HMAC of the) submitted email, so known
+      // and unknown addresses are limited identically and the 429 reveals nothing. Each attempt is counted up front
+      // (parallel guesses can't slip past the limit) and the count is cleared by a successful login.
+      const accountKey = emailKey(body.email);
+      const waitSeconds = deps.failedLogins.tryConsume(accountKey);
+      if (waitSeconds !== null) throw rateLimited(waitSeconds);
       const user = byEmail.get(body.email) as UserRow | undefined;
-      // Always run a hash comparison so response time doesn't reveal whether the email exists.
-      const ok = await verifyPassword(body.password, user?.password_hash ?? (await getDummyHash()));
+      let ok: boolean;
+      try {
+        // Always run one real scrypt comparison, so response time doesn't reveal whether the email exists or signs in
+        // with Google only (no password hash).
+        const hasPassword = !!user && isPasswordHash(user.password_hash);
+        const matches = await verifyPassword(body.password, hasPassword ? user.password_hash : await getDummyHash());
+        ok = hasPassword && matches;
+      } catch (err) {
+        deps.failedLogins.refund(accountKey); // e.g. 503 server_busy: not a failed login
+        throw err;
+      }
       if (!user || !ok) throw new HttpError(401, "Invalid email or password", "invalid_credentials");
+      deps.failedLogins.reset(accountKey);
       if (!user.email_verified) {
         throw new HttpError(403, "Please verify your email first. Check your inbox for the link.", "email_not_verified");
       }
@@ -164,6 +189,7 @@ export function authRouter(db: Db, deps: AppDeps) {
               "UPDATE users SET google_sub = ?, email_verified = 1, password_hash = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?"
             ).run(identity.sub, NO_PASSWORD, now, existing.id);
             db.prepare("DELETE FROM email_verifications WHERE user_id = ?").run(existing.id);
+            revokeAllSessions(db, existing.id); // D-7: the squatter's sessions are deleted, not only version-revoked
           }
           user = byId.get(existing.id) as unknown as UserRow;
         } else {
@@ -180,7 +206,11 @@ export function authRouter(db: Db, deps: AppDeps) {
     })
   );
 
-  router.post("/logout", (_req, res) => {
+  /** Revokes only this device's session (D-7). Always 204, with or without a valid session. */
+  router.post("/logout", (req, res) => {
+    const token = req.cookies?.[SESSION_COOKIE];
+    const claims = typeof token === "string" ? verifySession(token) : null;
+    if (claims) revokeSession(db, claims.jti, claims.sub);
     clearSessionCookie(res);
     res.status(204).end();
   });
@@ -190,6 +220,7 @@ export function authRouter(db: Db, deps: AppDeps) {
     "/logout-all",
     requireAuth(db),
     handler((req, res) => {
+      revokeAllSessions(db, req.user!.id);
       bumpTokenVersion.run(req.user!.id);
       clearSessionCookie(res);
       res.status(204).end();

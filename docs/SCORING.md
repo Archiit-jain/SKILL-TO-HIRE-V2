@@ -10,11 +10,12 @@ same result. No machine-learning model is trained or downloaded.
 
 | Input | Parser | Limits |
 |---|---|---|
-| PDF | `pdf-parse` 2.4.5 (pdf.js 5.4.296, `isEvalSupported: false`) | First 20 pages; pre-scan: no encryption, allowed filters only, Flate ≤ 10 MB per stream / 30 MB total (see `SECURITY.md`) |
+| PDF | `pdf-parse` 2.4.5 (pdf.js 5.4.296, `isEvalSupported: false`) | At most 20 pages (more → rejected, page count checked before any text is extracted); pre-scan: no encryption, allowed filters only, Flate ≤ 10 MB per stream / 30 MB total (see `SECURITY.md`) |
 | DOCX | `mammoth` 1.12.3 raw text | Guard: ≤ 2,000 entries, ≤ 20 MB declared, XML parts ≤ 4 MB each and in total, real sizes + CRC verified (see `SECURITY.md`) |
 | TXT (JD only) | strict UTF-8 decode | No NUL bytes |
 
-The text is normalised (line endings, control characters, bullet glyphs, whitespace) and capped at 100,000 characters.
+The text is normalised (line endings, control characters, bullet glyphs, whitespace). It is never truncated: a resume over 100,000
+characters or a JD over 50,000 characters is rejected with `422 document_too_long`.
 A resume needs at least 50 characters of text, and so does a JD. Scanned PDFs without a text layer are rejected.
 
 ## 2. Resume sections (`sections.ts`)

@@ -31,12 +31,12 @@ export function createApp(db: Db, overrides: Partial<AppDeps> = {}) {
   });
 
   api.get("/health", (_req, res) => {
-    res.json({ status: "ok", assistant: config.gemini ? "gemini" : "rules", ephemeralStorage: config.onVercel });
+    res.json({ status: "ok", assistant: deps.gemini ? "gemini" : "rules", ephemeralStorage: config.onVercel });
   });
   api.use("/auth", authRouter(db, deps));
   api.use("/account", accountRouter(db, deps));
   api.use("/analyses", analysesRouter(db, deps));
-  api.use("/assistant", assistantRouter(db));
+  api.use("/assistant", assistantRouter(db, deps));
   api.use((_req, _res, next) => next(new HttpError(404, "Not found", "not_found")));
   app.use("/api", api);
 
