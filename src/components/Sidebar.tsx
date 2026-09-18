@@ -1,16 +1,16 @@
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
 import type { Page, User } from "@/types";
 import {
   BookOpen,
-  ChevronsLeft,
-  ChevronsRight,
   FileText,
   Home,
-  Lock,
   LogIn,
   LogOut,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   Sparkles,
   Target,
@@ -25,16 +25,13 @@ interface SidebarProps {
   user: User | null;
   onLogout: () => void;
   onSignIn: () => void;
-  /** Pages that need an account; shown with a lock for guests. */
-  lockedPages: ReadonlySet<Page>;
   /**
-   * "static": desktop (always full width) and tablet (icon rail that can be expanded).
+   * "static": the sidebar beside the page, collapsible to an icon rail at any width.
    * "drawer": the mobile menu, always full width with a close button.
    */
   variant?: "static" | "drawer";
-  /** Tablet only: the rail is expanded to full width. */
-  expanded?: boolean;
-  onToggleExpanded?: () => void;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
   onClose?: () => void;
 }
 
@@ -51,13 +48,15 @@ export const NAV_ITEMS: Array<{ page: Page; label: string; icon: typeof Home }> 
 export function Logo({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-2">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan-500">
-        <Sparkles className="h-4 w-4" aria-hidden="true" />
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-parrot-500">
+        <Sparkles className="h-4 w-4 text-ink-950" aria-hidden="true" />
       </div>
-      <div className={compact ? "hidden lg:block" : ""}>
-        <p className="text-lg font-bold leading-tight">Skill2Hire</p>
-        <p className="text-xs text-slate-400">Career Intelligence</p>
-      </div>
+      {!compact && (
+        <div>
+          <p className="font-display text-lg font-bold leading-tight text-ink-50">Skill2Hire</p>
+          <p className="text-xs text-ink-300">Career Intelligence</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -68,110 +67,105 @@ export function Sidebar({
   user,
   onLogout,
   onSignIn,
-  lockedPages,
   variant = "static",
-  expanded = false,
-  onToggleExpanded,
+  collapsed = false,
+  onToggleCollapsed,
   onClose,
 }: SidebarProps) {
   const drawer = variant === "drawer";
-  // On tablets the rail shows icons only unless expanded; desktops and the mobile drawer always show labels.
-  const full = drawer || expanded;
-  const label = full ? "" : "hidden lg:inline";
-  const block = full ? "" : "hidden lg:block";
+  // The drawer is always full width; the static sidebar follows the collapse setting at every screen size.
+  const full = drawer || !collapsed;
 
   return (
     <aside
-      className={cn(
-        "flex h-full shrink-0 flex-col bg-slate-900 text-white",
-        drawer ? "w-72" : full ? "w-64" : "w-16 lg:w-64"
-      )}
+      className={cn("flex h-full shrink-0 flex-col bg-ink-900 text-ink-100 transition-[width] duration-200", drawer ? "w-72" : full ? "w-64" : "w-20")}
       aria-label="Main navigation"
     >
-      <div className={cn("flex items-center justify-between gap-2 border-b border-slate-800", full ? "p-5" : "p-4 lg:p-5")}>
+      <div className={cn("flex items-center gap-2 border-b border-ink-800", full ? "justify-between p-5" : "flex-col p-3")}>
         <Logo compact={!full} />
-        {drawer && (
-          <Button variant="ghost" size="icon" className="text-slate-300 hover:bg-slate-800 hover:text-white" aria-label="Close menu" onClick={onClose} autoFocus>
+        {drawer ? (
+          <Button variant="ghost" size="icon" className="text-ink-200 hover:bg-ink-800 hover:text-ink-50" aria-label="Close menu" onClick={onClose} autoFocus>
             <X className="h-5 w-5" />
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-ink-300 hover:bg-ink-800 hover:text-ink-50"
+            aria-label={collapsed ? "Expand menu" : "Collapse menu"}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Expand menu" : "Collapse menu"}
+            onClick={onToggleCollapsed}
+          >
+            {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
           </Button>
         )}
       </div>
 
-      <nav className={cn("flex-1 space-y-1 overflow-y-auto", full ? "p-4" : "p-2 lg:p-4")}>
+      <nav className={cn("flex-1 space-y-1 overflow-y-auto", full ? "p-4" : "p-2")}>
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const isActive = currentPage === item.page;
-          const locked = !user && lockedPages.has(item.page);
           return (
             <Button
               key={item.page}
               variant="ghost"
               aria-current={isActive ? "page" : undefined}
               aria-label={full ? undefined : item.label}
-              title={locked ? `${item.label} - log in to use this` : full ? undefined : item.label}
+              title={full ? undefined : item.label}
               className={cn(
-                "w-full text-slate-300 hover:bg-slate-800 hover:text-white",
-                full ? "justify-start" : "justify-center px-0 lg:justify-start lg:px-4",
-                isActive && "bg-slate-800 text-white",
-                locked && "text-slate-500"
+                "w-full text-ink-200 hover:bg-ink-800 hover:text-ink-50",
+                full ? "justify-start" : "justify-center px-0",
+                isActive && "bg-ink-800 text-ink-50"
               )}
               onClick={() => onNavigate(item.page)}
             >
-              <Icon className={cn("h-4 w-4 shrink-0", full ? "mr-3" : "lg:mr-3")} aria-hidden="true" />
-              <span className={label}>{item.label}</span>
-              {locked && <Lock className={cn("ml-auto h-3 w-3", full ? "" : "hidden lg:block")} aria-label="Requires login" />}
+              <Icon className={cn("h-4 w-4 shrink-0", full && "mr-3")} aria-hidden="true" />
+              {full && <span>{item.label}</span>}
             </Button>
           );
         })}
       </nav>
 
-      <div className={cn("space-y-3 border-t border-slate-800", full ? "p-4" : "p-2 lg:p-4")}>
+      <div className={cn("space-y-2 border-t border-ink-800", full ? "p-4" : "p-2")}>
+        <ThemeToggle tone="ink" showLabel={full} className={full ? "" : "w-full"} />
         {user ? (
           <>
-            <div className={cn("flex items-center gap-3", !full && "justify-center lg:justify-start")}>
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-700 text-sm font-semibold" title={full ? undefined : user.name}>
+            <div className={cn("flex items-center gap-3", !full && "justify-center")}>
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink-700 text-sm font-semibold text-ink-50" title={full ? undefined : user.name}>
                 {user.name.charAt(0).toUpperCase()}
               </div>
-              <div className={cn("min-w-0 flex-1", block)}>
-                <p className="truncate text-sm font-medium">{user.name}</p>
-                <p className="truncate text-xs text-slate-400">{user.email}</p>
-              </div>
+              {full && (
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-ink-50">{user.name}</p>
+                  <p className="truncate text-xs text-ink-300">{user.email}</p>
+                </div>
+              )}
             </div>
             <Button
               variant="ghost"
               aria-label={full ? undefined : "Log out"}
               title={full ? undefined : "Log out"}
-              className={cn("w-full text-slate-300 hover:bg-slate-800 hover:text-white", full ? "justify-start" : "justify-center px-0 lg:justify-start lg:px-4")}
+              className={cn("w-full text-ink-200 hover:bg-ink-800 hover:text-ink-50", full ? "justify-start" : "justify-center px-0")}
               onClick={onLogout}
             >
-              <LogOut className={cn("h-4 w-4 shrink-0", full ? "mr-3" : "lg:mr-3")} aria-hidden="true" />
-              <span className={label}>Log out</span>
+              <LogOut className={cn("h-4 w-4 shrink-0", full && "mr-3")} aria-hidden="true" />
+              {full && <span>Log out</span>}
             </Button>
           </>
         ) : (
           <>
-            <p className={cn("text-xs text-slate-400", block)}>You're using Skill2Hire as a guest. Log in to save results and run more analyses.</p>
+            {full && <p className="text-xs text-ink-300">You're using Skill2Hire as a guest. Log in to save results and run more analyses.</p>}
             <Button
               aria-label={full ? undefined : "Log in or sign up"}
               title={full ? undefined : "Log in or sign up"}
-              className={cn("w-full bg-cyan-500 text-slate-900 hover:bg-cyan-400", !full && "px-0 lg:px-4")}
+              className={cn("w-full bg-parrot-500 text-ink-950 hover:bg-parrot-400", !full && "px-0")}
               onClick={onSignIn}
             >
-              <LogIn className={cn("h-4 w-4 shrink-0", full ? "mr-2" : "lg:mr-2")} aria-hidden="true" />
-              <span className={label}>Log in / Sign up</span>
+              <LogIn className={cn("h-4 w-4 shrink-0", full && "mr-2")} aria-hidden="true" />
+              {full && <span>Log in / Sign up</span>}
             </Button>
           </>
-        )}
-        {variant === "static" && onToggleExpanded && (
-          <Button
-            variant="ghost"
-            className="w-full justify-center text-slate-400 hover:bg-slate-800 hover:text-white lg:hidden"
-            aria-label={expanded ? "Collapse menu" : "Expand menu"}
-            aria-expanded={expanded}
-            onClick={onToggleExpanded}
-          >
-            {expanded ? <ChevronsLeft className="h-4 w-4" /> : <ChevronsRight className="h-4 w-4" />}
-          </Button>
         )}
       </div>
     </aside>

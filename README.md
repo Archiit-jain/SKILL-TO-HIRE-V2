@@ -8,7 +8,8 @@ answers questions from the analysis, and a progress view tracks re-analyses by r
 Scoring is deterministic and rule-based (see [docs/SCORING.md](docs/SCORING.md)); it has **not** been validated as a
 hiring predictor. Try it without uploading anything: **Try Demo Analysis** runs the real engine on a synthetic sample.
 
-**Stack:** React 18 + TypeScript + Vite + Tailwind (frontend) · Node.js + Express 5 + TypeScript (backend) ·
+**Stack:** React 18 + TypeScript + Vite + Tailwind with a light/dark green theme and self-hosted fonts (frontend) ·
+Node.js + Express 5 + TypeScript (backend) ·
 libSQL via `@libsql/client` (Turso in production, a SQLite file locally) · optional Google Gemini to reword assistant
 answers (never scores).
 

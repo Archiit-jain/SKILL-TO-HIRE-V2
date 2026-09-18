@@ -133,8 +133,8 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
 
       {messages.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center">
-          <div className="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center mb-6">
-            <Bot className="w-8 h-8 text-cyan-400" />
+          <div className="w-16 h-16 bg-ink-900 rounded-2xl flex items-center justify-center mb-6">
+            <Bot className="w-8 h-8 text-parrot-400" />
           </div>
           <h2 className="text-xl font-semibold text-slate-900 mb-4">How can I help you today?</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full max-w-2xl">
@@ -188,8 +188,8 @@ export function AssistantPage({ analysisResult }: AssistantPageProps) {
                   )}
                 </div>
                 {message.role === "user" && (
-                  <div className="w-8 h-8 bg-cyan-500 rounded-lg flex items-center justify-center shrink-0">
-                    <User className="w-4 h-4 text-white" />
+                  <div className="w-8 h-8 bg-parrot-500 rounded-lg flex items-center justify-center shrink-0">
+                    <User className="w-4 h-4 text-ink-950" />
                   </div>
                 )}
               </div>

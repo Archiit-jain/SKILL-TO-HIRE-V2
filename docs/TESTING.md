@@ -78,6 +78,14 @@ database outside the repo (the developer `.env` was not loaded, so no data went 
 7. Sign-up, verification, progress history and account deletion were **not** driven through the browser, because that
    means typing a password into a form. They are covered end to end by `journey.test.ts` through the HTTP API.
 
+Theme and navigation pass (2026-09-18, same isolated server):
+- Toggle switches light/dark and is remembered (`s2h-theme`); with no stored choice the device setting is followed.
+  Light: body `#f4faf0` with dark text; dark: body `#0b120b` with light text; cards, chips and tables follow.
+- Headings render in Space Grotesk, body text in Plus Jakarta Sans, both served from the app.
+- Sidebar collapses (256 px ↔ 80 px) at desktop and tablet widths with the choice remembered, tooltips on the icon
+  rail, and a drawer on phones; no navigation item shows a lock, and guests are routed to sign-in.
+- No horizontal overflow at 375 px, 768 px or 1280 px in either theme.
+
 Vercel preview of the persistence commit (`9df50bc`, no Turso credentials): `GET /api/auth/providers` →
 `{"googleClientId":null,"emailSignup":false,"persistentStorage":false}`. The libSQL native module loads and migrations
 run on the `/tmp` fallback, and the API reports that storage is not persistent. A real Turso database was not available.

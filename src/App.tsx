@@ -13,14 +13,25 @@ import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import type { AnalysisResult, Page } from "@/types";
 import { AlertCircle, CheckCircle2, FlaskConical, Loader2, Menu, Target, X } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 /** Pages that need an account. Guests can use Home, one New Analysis, Results and the Roadmap. */
 const LOCKED_PAGES: ReadonlySet<Page> = new Set<Page>(["assistant", "progress", "settings"]);
 
-/** While the sample analysis is open, its rules-only assistant is available to guests too. */
-const SAMPLE_LOCKED_PAGES: ReadonlySet<Page> = new Set<Page>(["progress", "settings"]);
+const SIDEBAR_KEY = "s2h-sidebar-collapsed";
+
+/** The sidebar starts collapsed on narrow screens; an explicit choice is remembered. */
+function readCollapsed(): boolean {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_KEY);
+    if (saved === "true" || saved === "false") return saved === "true";
+  } catch {
+    /* storage blocked: fall back to the width */
+  }
+  return typeof window !== "undefined" && window.innerWidth < 1024;
+}
 
 const LOCKED_NOTICE: Partial<Record<Page, string>> = {
   assistant: "Log in to chat with the Career Assistant about your results.",
@@ -37,7 +48,7 @@ export default function App() {
     mode: "login",
   });
   const [menuOpen, setMenuOpen] = useState(false);
-  const [railExpanded, setRailExpanded] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
   const [demoError, setDemoError] = useState<string | null>(null);
   const {
     user,
@@ -76,10 +87,21 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [menuOpen]);
 
+  const toggleCollapsed = () =>
+    setCollapsed((previous) => {
+      const next = !previous;
+      try {
+        localStorage.setItem(SIDEBAR_KEY, String(next));
+      } catch {
+        /* choice just won't be remembered */
+      }
+      return next;
+    });
+
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-900" aria-label="Loading">
-        <Loader2 className="h-8 w-8 animate-spin text-cyan-400" aria-hidden="true" />
+      <div className="flex min-h-screen items-center justify-center bg-ink-950" aria-label="Loading">
+        <Loader2 className="h-8 w-8 animate-spin text-parrot-400" aria-hidden="true" />
       </div>
     );
   }
@@ -152,40 +174,42 @@ export default function App() {
       setMenuOpen(false);
       openAuth();
     },
-    lockedPages: analysisResult?.demo ? SAMPLE_LOCKED_PAGES : LOCKED_PAGES,
   };
 
   return (
     <div className="flex h-screen flex-col bg-slate-50 md:flex-row">
       {/* Mobile top bar */}
-      <header className="flex h-14 shrink-0 items-center justify-between bg-slate-900 px-4 text-white md:hidden">
+      <header className="flex h-14 shrink-0 items-center justify-between bg-ink-900 px-4 text-ink-50 md:hidden">
         <Logo />
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-slate-200 hover:bg-slate-800 hover:text-white"
-          aria-label="Open menu"
-          aria-expanded={menuOpen}
-          aria-controls="mobile-menu"
-          onClick={() => setMenuOpen(true)}
-        >
-          <Menu className="h-5 w-5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <ThemeToggle tone="ink" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-ink-200 hover:bg-ink-800 hover:text-ink-50"
+            aria-label="Open menu"
+            aria-expanded={menuOpen}
+            aria-controls="mobile-menu"
+            onClick={() => setMenuOpen(true)}
+          >
+            <Menu className="h-5 w-5" />
+          </Button>
+        </div>
       </header>
 
       {/* Mobile drawer */}
       {menuOpen && (
         <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Menu">
-          <button type="button" className="absolute inset-0 h-full w-full bg-slate-950/60" aria-label="Close menu" tabIndex={-1} onClick={() => setMenuOpen(false)} />
+          <button type="button" className="absolute inset-0 h-full w-full bg-ink-950/70" aria-label="Close menu" tabIndex={-1} onClick={() => setMenuOpen(false)} />
           <div id="mobile-menu" className="absolute inset-y-0 left-0 shadow-2xl">
             <Sidebar {...sidebarProps} variant="drawer" onClose={() => setMenuOpen(false)} />
           </div>
         </div>
       )}
 
-      {/* Tablet rail / desktop sidebar */}
+      {/* Sidebar (collapsible at every width from tablet up; phones use the drawer above) */}
       <div className="hidden md:flex">
-        <Sidebar {...sidebarProps} expanded={railExpanded} onToggleExpanded={() => setRailExpanded((v) => !v)} />
+        <Sidebar {...sidebarProps} collapsed={collapsed} onToggleCollapsed={toggleCollapsed} />
       </div>
 
       <main className="min-h-0 flex-1 overflow-y-auto">

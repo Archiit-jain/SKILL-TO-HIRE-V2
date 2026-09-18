@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 import { api, ApiError } from "@/lib/api";
 import { AuthProviders, SignupResult } from "@/types";
@@ -106,13 +107,16 @@ export function AuthPage({ providers, onLogin, onSignup, onGoogle, notice, initi
   const emailSignupDisabled = mode === "signup" && !providers.emailSignup;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4 pt-14">
+    <div className="relative min-h-screen bg-gradient-to-br from-slate-50 via-cyan-50 to-slate-100 flex items-center justify-center p-4 pt-14">
+      <div className="absolute right-3 top-16">
+        <ThemeToggle />
+      </div>
       <div className="w-full max-w-md">
         {onBack && (
           <button
             type="button"
             onClick={onBack}
-            className="mb-4 inline-flex items-center gap-1 text-sm text-slate-400 hover:text-white"
+            className="mb-4 inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900"
           >
             <ArrowLeft className="w-4 h-4" />
             Back
@@ -121,17 +125,17 @@ export function AuthPage({ providers, onLogin, onSignup, onGoogle, notice, initi
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 mb-4">
-            <div className="w-12 h-12 bg-cyan-500 rounded-xl flex items-center justify-center">
-              <Sparkles className="w-6 h-6 text-slate-900" />
+            <div className="w-12 h-12 bg-parrot-500 rounded-xl flex items-center justify-center">
+              <Sparkles className="w-6 h-6 text-ink-950" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-white mb-2">Skill2Hire</h1>
-          <p className="text-slate-400">
+          <h1 className="text-3xl font-bold text-slate-900 mb-2">Skill2Hire</h1>
+          <p className="text-slate-600">
             Know Your Skills. Bridge Your Gaps. Get Hired.
           </p>
         </div>
 
-        <Card className="bg-white border-0 shadow-xl">
+        <Card className="bg-white border border-slate-200 shadow-xl">
           <CardContent className="p-8">
             {pendingEmail ? (
               <div className="text-center space-y-4" role="status">
