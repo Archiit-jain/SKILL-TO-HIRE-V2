@@ -122,12 +122,24 @@ export function AuthPage({ providers, onLogin, onSignup, onGoogle, notice, initi
             Back
           </button>
         )}
-        {/* Logo */}
+        {/* Logo: also the way back to the app when the screen was opened from it. */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 mb-4">
-            <div className="w-12 h-12 bg-parrot-500 rounded-xl flex items-center justify-center">
-              <Sparkles className="w-6 h-6 text-ink-950" />
-            </div>
+            {onBack ? (
+              <button
+                type="button"
+                onClick={onBack}
+                aria-label="Back to Skill2Hire"
+                title="Back to Skill2Hire"
+                className="w-12 h-12 bg-parrot-500 rounded-xl flex items-center justify-center transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parrot-500 focus-visible:ring-offset-2"
+              >
+                <Sparkles className="w-6 h-6 text-ink-950" aria-hidden="true" />
+              </button>
+            ) : (
+              <div className="w-12 h-12 bg-parrot-500 rounded-xl flex items-center justify-center">
+                <Sparkles className="w-6 h-6 text-ink-950" aria-hidden="true" />
+              </div>
+            )}
           </div>
           <h1 className="text-3xl font-bold text-slate-900 mb-2">Skill2Hire</h1>
           <p className="text-slate-600">

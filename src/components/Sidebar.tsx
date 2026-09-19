@@ -45,19 +45,32 @@ export const NAV_ITEMS: Array<{ page: Page; label: string; icon: typeof Home }> 
   { page: "settings", label: "Settings", icon: Settings },
 ];
 
-export function Logo({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className="flex items-center gap-2">
+/** The wordmark. With `onClick` it becomes a button (used to go home from anywhere). */
+export function Logo({ compact = false, onClick, label = "Skill2Hire home" }: { compact?: boolean; onClick?: () => void; label?: string }) {
+  const mark = (
+    <>
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-parrot-500">
         <Sparkles className="h-4 w-4 text-ink-950" aria-hidden="true" />
       </div>
       {!compact && (
-        <div>
+        <div className="text-left">
           <p className="font-display text-lg font-bold leading-tight text-ink-50">Skill2Hire</p>
           <p className="text-xs text-ink-300">Career Intelligence</p>
         </div>
       )}
-    </div>
+    </>
+  );
+  if (!onClick) return <div className="flex items-center gap-2">{mark}</div>;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="flex items-center gap-2 rounded-lg transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parrot-400 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-900"
+    >
+      {mark}
+    </button>
   );
 }
 
@@ -82,7 +95,7 @@ export function Sidebar({
       aria-label="Main navigation"
     >
       <div className={cn("flex items-center gap-2 border-b border-ink-800", full ? "justify-between p-5" : "flex-col p-3")}>
-        <Logo compact={!full} />
+        <Logo compact={!full} onClick={() => onNavigate("home")} />
         {drawer ? (
           <Button variant="ghost" size="icon" className="text-ink-200 hover:bg-ink-800 hover:text-ink-50" aria-label="Close menu" onClick={onClose} autoFocus>
             <X className="h-5 w-5" />

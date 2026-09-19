@@ -180,7 +180,7 @@ export default function App() {
     <div className="flex h-screen flex-col bg-slate-50 md:flex-row">
       {/* Mobile top bar */}
       <header className="flex h-14 shrink-0 items-center justify-between bg-ink-900 px-4 text-ink-50 md:hidden">
-        <Logo />
+        <Logo onClick={() => handleNavigate("home")} />
         <div className="flex items-center gap-1">
           <ThemeToggle tone="ink" />
           <Button
