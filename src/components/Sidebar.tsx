@@ -91,7 +91,7 @@ export function Sidebar({
 
   return (
     <aside
-      className={cn("flex h-full shrink-0 flex-col bg-ink-900 text-ink-100 transition-[width] duration-200", drawer ? "w-72" : full ? "w-64" : "w-20")}
+      className={cn("flex h-full shrink-0 flex-col bg-ink-900 text-ink-100", drawer ? "w-72" : full ? "w-64" : "w-20")}
       aria-label="Main navigation"
     >
       <div className={cn("flex items-center gap-2 border-b border-ink-800", full ? "justify-between p-5" : "flex-col p-3")}>

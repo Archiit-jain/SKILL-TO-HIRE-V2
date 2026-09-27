@@ -176,7 +176,7 @@ export function HomePage({ onNavigate, onOpenDemo, hasAnalysis, isGuest }: HomeP
             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
               <Button
                 size="lg"
-                className="bg-parrot-500 text-ink-950 shadow-lg shadow-parrot-500/20 transition-transform hover:-translate-y-0.5 hover:bg-parrot-400"
+                className="bg-parrot-500 text-ink-950 shadow-lg shadow-parrot-500/20 motion-safe:transition-transform motion-safe:hover:-translate-y-0.5 hover:bg-parrot-400"
                 onClick={openDemo}
                 disabled={opening}
               >
@@ -186,7 +186,7 @@ export function HomePage({ onNavigate, onOpenDemo, hasAnalysis, isGuest }: HomeP
               <Button
                 size="lg"
                 variant="outline"
-                className="border-slate-300 bg-white/70 text-slate-900 backdrop-blur transition-transform hover:-translate-y-0.5 hover:bg-white"
+                className="border-slate-300 bg-white/70 text-slate-900 backdrop-blur motion-safe:transition-transform motion-safe:hover:-translate-y-0.5 hover:bg-white"
                 onClick={() => onNavigate("analysis")}
               >
                 {isGuest && !hasAnalysis ? "Analyze my resume free" : "Start New Analysis"}
@@ -227,7 +227,7 @@ export function HomePage({ onNavigate, onOpenDemo, hasAnalysis, isGuest }: HomeP
             const Icon = step.icon;
             return (
               <li key={step.title} className="reveal" style={{ transitionDelay: `${i * 90}ms` }}>
-                <Card className="h-full border-slate-200 bg-white shadow-sm transition-transform duration-200 hover:-translate-y-1 hover:shadow-md">
+                <Card className="h-full border-slate-200 bg-white shadow-sm motion-safe:transition-transform motion-safe:duration-200 motion-safe:hover:-translate-y-1 hover:shadow-md">
                   <CardContent className="p-6">
                     <div className="mb-4 flex items-center gap-3">
                       <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-ink-900">
