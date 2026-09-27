@@ -83,8 +83,12 @@ chars without `<>` or control characters. All SQL uses prepared statements with 
   - Encrypted PDFs (any `/Encrypt` entry, including escaped names) → `422 file_too_complex` "Encrypted or
     password-protected PDFs aren't supported. Please upload an unprotected PDF."
   - Allowed stream filters: none, a single `FlateDecode`, or a single image codec that text extraction doesn't expand
-    (DCT, JPX, CCITTFax, JBIG2). LZW, RunLength, ASCII85, ASCIIHex, Crypt, unknown filters, filter chains and
-    indirect `/Filter` values are rejected.
+    (DCT, JPX, CCITTFax, JBIG2). Since 2026-09-27 (owner decision SEC-D3b) also a text encoding (`ASCII85Decode`/`A85`,
+    `ASCIIHexDecode`/`AHx`) on its own or as the single stage in front of `FlateDecode`, e.g.
+    `[/ASCII85Decode /FlateDecode]` as written by ReportLab. The guard decodes that stage itself (linear, capped: the
+    only expanding form is ASCII85's `z`, four zero bytes per character) and then measures the Flate output exactly as
+    below. LZW, RunLength, Crypt, unknown filters, all other chains (for example `[/FlateDecode /DCTDecode]`, a text
+    encoding after Flate or before an image codec, two text encodings) and indirect `/Filter` values are rejected.
   - Every Flate stream is inflated in 64 KB chunks, counting and discarding the output, until the deflate stream really
     ends. `/Length` and `endstream` are not trusted. One stream > 10 MB or all streams > 30 MB → rejected.
   - pdf.js 5.4.296 (includes the fix for CVE-2024-4367), `isEvalSupported: false`. PDFs with more than 20 pages are rejected
@@ -288,7 +292,7 @@ addresses this with the 20 s parse deadline described above.
 | Documents parsed in turn | With one parse worker, a second concurrent upload waits for the first; its wait counts toward its 20 s deadline, so two cap-sized PDFs at once end with the second rejected (measured: 20.3 s total) |
 | Peak memory near the Vercel function size | Measured locally through the real route: two cap-sized parses at once peaked at ~862 MB with a 960 MB heap cap (~162 MB / ~16% margin to Vercel's 1024 MB). The earlier 852 MB shortcut-harness figure is superseded. pdf.js alone peaks at ~578 MB on its first document, before any P0 change. Caps were **not** changed; Vercel's heap limit and runtime overhead weren't verified, so revalidate on the Vercel preview |
 | Slow concurrent PDF parsing (P0 finding) | Two capped PDFs at once took 26–28 s locally; now bounded by the 20 s parse deadline (D-11) |
-| Legitimate PDFs refused by the SEC-D3 policy | Encrypted/owner-password PDFs, LZW/RunLength/ASCII filters, filter chains such as `[/FlateDecode /DCTDecode]`, and Flate images larger than 10 MB decompressed are rejected with a clear 422 |
+| Legitimate PDFs refused by the SEC-D3 policy | Encrypted/owner-password PDFs, LZW/RunLength filters, filter chains such as `[/FlateDecode /DCTDecode]`, and Flate images larger than 10 MB decompressed are rejected with a clear 422. ASCII85/ASCIIHex (alone or before Flate) are accepted since SEC-D3b |
 | Inline images inside content streams | Not visible to the pre-scan; measured that pdf.js text extraction does not decode them (a 196 MB inline image left peak memory unchanged). A regression test keeps this covered |
 | CSP style hash tied to Radix | If a Radix upgrade changes the ScrollArea style, the hash test fails and the CSP must be updated. Google's sign-in button was not exercised in the local CSP check (no client ID configured); its documented CSP sources are unchanged |
 | Local SQLite file is not encrypted at rest | Use disk encryption on the host (Turso encrypts its storage); passwords are hashed regardless |

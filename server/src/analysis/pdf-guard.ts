@@ -37,6 +37,17 @@ export const defaultPdfLimits = (): PdfLimits => ({
 const CHUNK = 64 * 1024;
 const FLATE = new Set(["FlateDecode", "Fl"]);
 const NON_EXPANDING_IMAGE_CODECS = new Set(["DCTDecode", "DCT", "JPXDecode", "CCITTFaxDecode", "CCF", "JBIG2Decode"]);
+/**
+ * Text encodings of binary data (owner decision 2026-09-27, extends SEC-D3). Allowed on their own or as the single
+ * stage in front of FlateDecode, e.g. [/ASCII85Decode /FlateDecode] as written by ReportLab. The guard decodes them
+ * itself, with the same caps, so the Flate output is still measured.
+ */
+const TEXT_ENCODINGS: Record<string, "ascii85" | "asciihex"> = {
+  ASCII85Decode: "ascii85",
+  A85: "ascii85",
+  ASCIIHexDecode: "asciihex",
+  AHx: "asciihex",
+};
 
 // ---------------------------------------------------------------------------------------------- tokeniser
 const WHITESPACE = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
@@ -243,6 +254,76 @@ function countInflated(b: Buffer, start: number, cap: number): Promise<{ size: n
   });
 }
 
+/**
+ * Decodes an ASCII85 or ASCIIHex stage starting at `start`, up to its end marker ("~>" or ">"), the first invalid
+ * character (where pdf.js stops too) or the end of the file. Output beyond `cap` stops decoding with `over` set; the
+ * only expanding case is ASCII85's "z" (one character for four zero bytes). Linear in the input.
+ */
+export function decodeTextStage(b: Buffer, start: number, kind: "ascii85" | "asciihex", cap: number): { data: Buffer; over: boolean } {
+  const remaining = Math.max(0, b.length - start);
+  const out = Buffer.allocUnsafe(Math.max(0, Math.min(cap + 4, kind === "ascii85" ? remaining * 4 : Math.ceil(remaining / 2))));
+  let o = 0;
+  const room = (n: number) => o + n <= cap;
+  let i = start;
+  if (kind === "asciihex") {
+    let hi = -1;
+    for (; i < b.length; i++) {
+      const c = b[i];
+      if (WHITESPACE.has(c)) continue;
+      if (c === 0x3e) break; // ">"
+      const v = c >= 0x30 && c <= 0x39 ? c - 0x30 : c >= 0x41 && c <= 0x46 ? c - 0x37 : c >= 0x61 && c <= 0x66 ? c - 0x57 : -1;
+      if (v < 0) break;
+      if (hi < 0) {
+        hi = v;
+        continue;
+      }
+      if (!room(1)) return { data: out.subarray(0, o), over: true };
+      out[o++] = hi * 16 + v;
+      hi = -1;
+    }
+    if (hi >= 0) {
+      if (!room(1)) return { data: out.subarray(0, o), over: true };
+      out[o++] = hi * 16;
+    }
+    return { data: out.subarray(0, o), over: false };
+  }
+
+  while (i < b.length && WHITESPACE.has(b[i])) i++;
+  if (b[i] === 0x3c && b[i + 1] === 0x7e) i += 2; // optional "<~"
+  let group = 0;
+  let n = 0;
+  for (; i < b.length; i++) {
+    const c = b[i];
+    if (WHITESPACE.has(c)) continue;
+    if (c === 0x7e) break; // "~>"
+    if (c === 0x7a && n === 0) {
+      // "z" = four zero bytes
+      if (!room(4)) return { data: out.subarray(0, o), over: true };
+      out.fill(0, o, o + 4);
+      o += 4;
+      continue;
+    }
+    if (c < 0x21 || c > 0x75) break;
+    group = group * 85 + (c - 0x21);
+    if (++n === 5) {
+      if (!room(4)) return { data: out.subarray(0, o), over: true };
+      out.writeUInt32BE(group % 0x100000000, o);
+      o += 4;
+      group = 0;
+      n = 0;
+    }
+  }
+  if (n > 1) {
+    // A final partial group of n characters is padded with "u" and yields n - 1 bytes.
+    for (let k = n; k < 5; k++) group = group * 85 + 84;
+    const bytes = n - 1;
+    if (!room(bytes)) return { data: out.subarray(0, o), over: true };
+    const word = group % 0x100000000;
+    for (let k = 0; k < bytes; k++) out[o++] = (word >>> (24 - 8 * k)) & 0xff;
+  }
+  return { data: out.subarray(0, o), over: false };
+}
+
 // A PDF name: "/" then regular characters, where "#hh" is an escaped byte. The alternatives can't overlap, so matching
 // stays linear on hostile input.
 const NAME = /\/((?:[^\s/<>[\]()%{}#\x00]|#[0-9a-fA-F]{2})+)/g;
@@ -271,12 +352,35 @@ export async function checkPdf(buf: Buffer, limits: PdfLimits = defaultPdfLimits
     const { filter } = stream;
     if (filter.kind === "unsupported") throw unsafe();
     if (filter.kind === "none") continue;
-    if (filter.names.length !== 1) throw unsafe(); // chained filters
-    const [name] = filter.names;
-    if (NON_EXPANDING_IMAGE_CODECS.has(name)) continue;
-    if (!FLATE.has(name)) throw unsafe(); // LZW, RunLength, ASCII85, ASCIIHex, Crypt, unknown
+    const names = [...filter.names];
+    // At most one text-encoding stage, and only in front (it is decoded first).
+    const text = TEXT_ENCODINGS[names[0]];
+    if (text) names.shift();
+    if (names.length > 1) throw unsafe(); // any other chain
+    const start = dataStart(buf, stream.afterKeyword);
     const cap = Math.min(limits.maxStreamBytes, limits.maxTotalBytes - total);
-    const { size, over } = await countInflated(buf, dataStart(buf, stream.afterKeyword), cap);
+    if (!names.length) {
+      // A text encoding on its own.
+      const { data, over } = decodeTextStage(buf, start, text!, cap);
+      if (over) throw unsafe();
+      total += data.length;
+      continue;
+    }
+    const [name] = names;
+    if (NON_EXPANDING_IMAGE_CODECS.has(name)) {
+      if (text) throw unsafe(); // [/ASCII85Decode /DCTDecode] and similar stay outside the approved policy
+      continue;
+    }
+    if (!FLATE.has(name)) throw unsafe(); // LZW, RunLength, Crypt, a second text encoding, unknown
+    let source = buf;
+    let from = start;
+    if (text) {
+      const decoded = decodeTextStage(buf, start, text, cap);
+      if (decoded.over) throw unsafe();
+      source = decoded.data;
+      from = 0;
+    }
+    const { size, over } = await countInflated(source, from, cap);
     if (over) throw unsafe();
     total += size;
   }

@@ -7,7 +7,7 @@ import { PDFParse } from "pdf-parse";
 import { config } from "../src/config.js";
 import { UNSAFE_DOCUMENT_MESSAGE } from "../src/analysis/docx-guard.js";
 import { extractText } from "../src/analysis/extract.js";
-import { checkPdf, defaultPdfLimits, ENCRYPTED_PDF_MESSAGE, type PdfLimits } from "../src/analysis/pdf-guard.js";
+import { checkPdf, decodeTextStage, defaultPdfLimits, ENCRYPTED_PDF_MESSAGE, type PdfLimits } from "../src/analysis/pdf-guard.js";
 import { makePdf, makePdfWithStreams, SAMPLE_RESUME } from "./fixtures.js";
 
 const KB = 1024;
@@ -16,6 +16,29 @@ const LOW: PdfLimits = { maxStreamBytes: 64 * KB, maxTotalBytes: 160 * KB };
 
 const spaces = (n: number) => Buffer.alloc(n, 0x20);
 const flate = (data: Buffer) => zlib.deflateSync(data, { level: 9 });
+
+/** ASCII85 encoder (with "z" for zero groups, a line break every 75 characters and the "~>" end marker). */
+function ascii85(data: Buffer): Buffer {
+  let out = "";
+  for (let i = 0; i < data.length; i += 4) {
+    const n = Math.min(4, data.length - i);
+    const chunk = Buffer.alloc(4);
+    data.copy(chunk, 0, i, i + n);
+    let v = chunk.readUInt32BE(0);
+    if (v === 0 && n === 4) {
+      out += "z";
+      continue;
+    }
+    const chars: string[] = [];
+    for (let k = 0; k < 5; k++) {
+      chars.unshift(String.fromCharCode((v % 85) + 33));
+      v = Math.floor(v / 85);
+    }
+    out += chars.join("").slice(0, n + 1);
+  }
+  return Buffer.from(out.replace(/(.{75})/g, "$1\n") + "~>", "latin1");
+}
+const asciiHex = (data: Buffer) => Buffer.from(data.toString("hex").replace(/(.{64})/g, "$1\n") + ">", "latin1");
 
 async function unsafe(pdf: Buffer, limits?: PdfLimits) {
   await assert.rejects(checkPdf(pdf, limits), { status: 422, code: "file_too_complex", message: UNSAFE_DOCUMENT_MESSAGE });
@@ -127,16 +150,82 @@ describe("PDF guard: encryption and filter policy (D-3)", () => {
     await checkPdf(makePdfWithStreams("x", [{ dict: "/EncryptMetadata false", data: Buffer.from("x") }]));
   });
 
+  // ASCII85/ASCIIHex on their own or in front of FlateDecode are accepted since 2026-09-27 (see the suite below).
   const rejected = [
-    "/Filter /LZWDecode", "/Filter /LZW", "/Filter /RunLengthDecode", "/Filter /RL", "/Filter /ASCII85Decode", "/Filter /A85",
-    "/Filter /ASCIIHexDecode", "/Filter /AHx", "/Filter /Crypt", "/Filter /BrandNewDecode", "/Filter [ /ASCIIHexDecode /FlateDecode ]",
-    "/Filter [ /FlateDecode /DCTDecode ]", "/Filter 9 0 R", "/Filter [ 9 0 R ]", "/Filter null",
+    "/Filter /LZWDecode", "/Filter /LZW", "/Filter /RunLengthDecode", "/Filter /RL", "/Filter /Crypt", "/Filter /BrandNewDecode",
+    "/Filter [ /FlateDecode /DCTDecode ]", "/Filter [ /FlateDecode /ASCII85Decode ]", "/Filter [ /ASCII85Decode /LZWDecode ]",
+    "/Filter [ /ASCII85Decode /RunLengthDecode ]", "/Filter [ /ASCII85Decode /DCTDecode ]",
+    "/Filter [ /ASCII85Decode /ASCIIHexDecode /FlateDecode ]", "/Filter [ /ASCIIHexDecode /ASCIIHexDecode ]",
+    "/Filter [ /ASCII85Decode /FlateDecode /FlateDecode ]", "/Filter 9 0 R", "/Filter [ 9 0 R ]", "/Filter null",
   ];
   for (const dict of rejected) {
     it(`rejects ${dict}`, async () => {
       await unsafe(makePdfWithStreams("x", [{ dict, data: Buffer.from("00") }]));
     });
   }
+});
+
+describe("PDF guard: ASCII85/ASCIIHex text encodings (owner decision 2026-09-27)", () => {
+  const content = Buffer.from("BT /F1 10 Tf 40 800 Td (Built data pipelines with Python and SQL) Tj ET");
+
+  it("accepts a ReportLab-style [/ASCII85Decode /FlateDecode] page and still extracts its text", async () => {
+    const pdf = makePdfWithStreams("", [], { contentDict: "/Filter [ /ASCII85Decode /FlateDecode ]", contentData: ascii85(flate(content)) });
+    await checkPdf(pdf);
+    assert.match(await extractText(pdf, "cv.pdf", ["pdf"]), /Built data pipelines with Python and SQL/);
+  });
+
+  it("accepts the abbreviations and ASCIIHex, in front of Flate or on their own", async () => {
+    for (const [dict, data] of [
+      ["/Filter [ /A85 /Fl ]", ascii85(flate(content))],
+      ["/Filter [ /ASCIIHexDecode /FlateDecode ]", asciiHex(flate(content))],
+      ["/Filter [ /AHx /FlateDecode ]", asciiHex(flate(content))],
+      ["/Filter /ASCII85Decode", ascii85(content)],
+      ["/Filter /A85", ascii85(content)],
+      ["/Filter /ASCIIHexDecode", asciiHex(content)],
+      ["/Filter [ /AHx ]", asciiHex(content)],
+    ] as const) {
+      await checkPdf(makePdfWithStreams("x", [{ dict, data }]), LOW);
+    }
+  });
+
+  it("still measures the Flate output after decoding the text stage, against the same caps", async () => {
+    const atCap = ascii85(flate(spaces(LOW.maxStreamBytes)));
+    await checkPdf(makePdfWithStreams("x", [{ dict: "/Filter [ /ASCII85Decode /FlateDecode ]", data: atCap }]), LOW);
+    const overCap = ascii85(flate(spaces(LOW.maxStreamBytes + 1)));
+    forbidPdfJs();
+    await unsafe(makePdfWithStreams("x", [{ dict: "/Filter [ /ASCII85Decode /FlateDecode ]", data: overCap }]), LOW);
+    await unsafe(makePdfWithStreams("x", [{ dict: "/Filter [ /ASCIIHexDecode /FlateDecode ]", data: asciiHex(flate(spaces(LOW.maxStreamBytes + 1))) }]), LOW);
+  });
+
+  it("rejects the committed-cap bomb hidden behind ASCII85 (11 MB of spaces in a tiny file)", async () => {
+    const pdf = makePdfWithStreams("Experience", [{ dict: "/Filter [ /ASCII85Decode /FlateDecode ]", data: ascii85(flate(spaces(11 * MB))) }]);
+    assert.ok(pdf.length < 100 * KB);
+    forbidPdfJs();
+    await assert.rejects(extractText(pdf, "cv.pdf", ["pdf"]), { status: 422, code: "file_too_complex", message: UNSAFE_DOCUMENT_MESSAGE });
+  });
+
+  it("caps ASCII85's only expanding form, 'z' (four zero bytes per character)", async () => {
+    const zeros = (count: number) => Buffer.from("z".repeat(count) + "~>", "latin1");
+    await checkPdf(makePdfWithStreams("x", [{ dict: "/Filter /ASCII85Decode", data: zeros(LOW.maxStreamBytes / 4) }]), LOW);
+    await unsafe(makePdfWithStreams("x", [{ dict: "/Filter /ASCII85Decode", data: zeros(LOW.maxStreamBytes / 4 + 1) }]), LOW);
+  });
+
+  it("counts decoded text-stage output toward the total cap", async () => {
+    const each = { dict: "/Filter [ /ASCII85Decode /FlateDecode ]", data: ascii85(flate(spaces(60 * KB))) };
+    await checkPdf(makePdfWithStreams("x", [each, each]), LOW);
+    await unsafe(makePdfWithStreams("x", [each, each, each]), LOW);
+  });
+
+  it("decodes both encodings like pdf.js: whitespace, end markers, partial groups, invalid characters", () => {
+    const sample = Buffer.from("Resume text: Python, SQL \u0000\u0000\u0000\u0000 and more.", "latin1");
+    assert.deepEqual(decodeTextStage(ascii85(sample), 0, "ascii85", 1024).data, sample);
+    assert.deepEqual(decodeTextStage(Buffer.concat([Buffer.from("<~"), ascii85(sample)]), 0, "ascii85", 1024).data, sample, "optional <~ prefix");
+    assert.deepEqual(decodeTextStage(asciiHex(sample), 0, "asciihex", 1024).data, sample);
+    assert.deepEqual(decodeTextStage(Buffer.from("4 1 4>"), 0, "asciihex", 1024).data, Buffer.from([0x41, 0x40]), "odd final digit is padded with 0");
+    assert.deepEqual(decodeTextStage(Buffer.from("4142zz~>ignored"), 0, "asciihex", 1024).data, Buffer.from("AB"), "stops at an invalid character");
+    assert.deepEqual(decodeTextStage(Buffer.from("87cURD]i,\"Ebo80~>"), 0, "ascii85", 1024).data, Buffer.from("Hello World!"));
+    assert.equal(decodeTextStage(Buffer.from("zz~>"), 0, "ascii85", 7).over, true, "cap applies mid-stream");
+  });
 });
 
 describe("PDF guard: malformed input never crashes", () => {
