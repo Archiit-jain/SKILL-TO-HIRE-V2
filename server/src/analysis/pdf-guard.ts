@@ -254,74 +254,106 @@ function countInflated(b: Buffer, start: number, cap: number): Promise<{ size: n
   });
 }
 
+/** pdf.js's isWhiteSpace(): only space, tab, CR and LF. NUL and form feed are ASCII85 digits to pdf.js. */
+const isPdfJsSpace = (c: number) => c === 0x20 || c === 0x09 || c === 0x0d || c === 0x0a;
+const ENDSTREAM = Buffer.from("endstream", "latin1");
+const atEndstream = (b: Buffer, i: number) =>
+  b[i] === 0x65 && i + ENDSTREAM.length <= b.length && b.compare(ENDSTREAM, 0, ENDSTREAM.length, i, i + ENDSTREAM.length) === 0;
+
+export interface TextStageResult {
+  data: Buffer;
+  /** Output went past `cap`. */
+  over: boolean;
+  /** The stage's end marker ("~" or ">") was found before the next "endstream" and before the end of the file. */
+  complete: boolean;
+  /** Input bytes read, including the end marker. */
+  scanned: number;
+}
+
 /**
- * Decodes an ASCII85 or ASCIIHex stage starting at `start`, up to its end marker ("~>" or ">"), the first invalid
- * character (where pdf.js stops too) or the end of the file. Output beyond `cap` stops decoding with `over` set; the
- * only expanding case is ASCII85's "z" (one character for four zero bytes). Linear in the input.
+ * Decodes an ASCII85 or ASCIIHex stage exactly like pdf.js 5.4 (Ascii85Stream / AsciiHexStream), from `start` to the
+ * stage's end marker. pdf.js does not stop at invalid characters: ASCII85 folds every non-whitespace byte into the
+ * arithmetic, ASCIIHex skips every non-hex byte. It stops only at the marker ("~" / ">") or the end of the stream
+ * data, so decoding up to the marker yields at least what pdf.js decodes, never less.
+ *
+ * A stream whose marker doesn't come before the next "endstream" (or the end of the file) is reported as incomplete
+ * and refused by the caller: pdf.js's stream end is always at or after that first "endstream", so the marker would
+ * be the only stop both sides agree on. Output beyond `cap` stops decoding with `over`; the only expanding form is
+ * ASCII85's "z" (one character for four zero bytes). Linear in the bytes scanned.
  */
-export function decodeTextStage(b: Buffer, start: number, kind: "ascii85" | "asciihex", cap: number): { data: Buffer; over: boolean } {
+export function decodeTextStage(b: Buffer, start: number, kind: "ascii85" | "asciihex", cap: number): TextStageResult {
   const remaining = Math.max(0, b.length - start);
   const out = Buffer.allocUnsafe(Math.max(0, Math.min(cap + 4, kind === "ascii85" ? remaining * 4 : Math.ceil(remaining / 2))));
   let o = 0;
-  const room = (n: number) => o + n <= cap;
   let i = start;
+  const result = (over: boolean, complete: boolean): TextStageResult => ({ data: out.subarray(0, o), over, complete, scanned: i - start });
+
   if (kind === "asciihex") {
     let hi = -1;
     for (; i < b.length; i++) {
+      if (atEndstream(b, i)) return result(false, false);
       const c = b[i];
-      if (WHITESPACE.has(c)) continue;
-      if (c === 0x3e) break; // ">"
       const v = c >= 0x30 && c <= 0x39 ? c - 0x30 : c >= 0x41 && c <= 0x46 ? c - 0x37 : c >= 0x61 && c <= 0x66 ? c - 0x57 : -1;
-      if (v < 0) break;
+      if (v < 0) {
+        if (c !== 0x3e) continue; // pdf.js skips every other byte
+        i++;
+        if (hi >= 0) {
+          if (o + 1 > cap) return result(true, true);
+          out[o++] = hi << 4; // an odd final digit, completed by ">"
+        }
+        return result(false, true);
+      }
       if (hi < 0) {
         hi = v;
         continue;
       }
-      if (!room(1)) return { data: out.subarray(0, o), over: true };
-      out[o++] = hi * 16 + v;
+      if (o + 1 > cap) return result(true, false);
+      out[o++] = (hi << 4) | v;
       hi = -1;
     }
-    if (hi >= 0) {
-      if (!room(1)) return { data: out.subarray(0, o), over: true };
-      out[o++] = hi * 16;
-    }
-    return { data: out.subarray(0, o), over: false };
+    return result(false, false);
   }
 
-  while (i < b.length && WHITESPACE.has(b[i])) i++;
-  if (b[i] === 0x3c && b[i + 1] === 0x7e) i += 2; // optional "<~"
-  let group = 0;
-  let n = 0;
-  for (; i < b.length; i++) {
-    const c = b[i];
-    if (WHITESPACE.has(c)) continue;
-    if (c === 0x7e) break; // "~>"
-    if (c === 0x7a && n === 0) {
-      // "z" = four zero bytes
-      if (!room(4)) return { data: out.subarray(0, o), over: true };
+  // ASCII85: groups of five digits (any non-whitespace byte, value = byte - 33), "z" at a group start = four zeros.
+  const next = (): number => {
+    for (; i < b.length; i++) {
+      if (atEndstream(b, i)) return -2;
+      if (!isPdfJsSpace(b[i])) return b[i++];
+    }
+    return -1;
+  };
+  const digits = [0, 0, 0, 0, 0];
+  for (;;) {
+    const first = next();
+    if (first < 0) return result(false, false); // no "~" before endstream / end of file
+    if (first === 0x7e) return result(false, true); // "~"
+    if (first === 0x7a) {
+      if (o + 4 > cap) return result(true, false);
       out.fill(0, o, o + 4);
       o += 4;
       continue;
     }
-    if (c < 0x21 || c > 0x75) break;
-    group = group * 85 + (c - 0x21);
-    if (++n === 5) {
-      if (!room(4)) return { data: out.subarray(0, o), over: true };
-      out.writeUInt32BE(group % 0x100000000, o);
-      o += 4;
-      group = 0;
-      n = 0;
+    digits[0] = first;
+    let n = 1;
+    let ended = false;
+    for (; n < 5; n++) {
+      const c = next();
+      if (c < 0) return result(false, false);
+      if (c === 0x7e) {
+        ended = true;
+        break;
+      }
+      digits[n] = c;
     }
-  }
-  if (n > 1) {
-    // A final partial group of n characters is padded with "u" and yields n - 1 bytes.
-    for (let k = n; k < 5; k++) group = group * 85 + 84;
-    const bytes = n - 1;
-    if (!room(bytes)) return { data: out.subarray(0, o), over: true };
-    const word = group % 0x100000000;
+    for (let k = n; k < 5; k++) digits[k] = 0x75; // a partial group is padded with "u"
+    let s = 0;
+    for (let k = 0; k < 5; k++) s = s * 85 + (digits[k] - 33);
+    const word = ((s % 0x100000000) + 0x100000000) % 0x100000000; // pdf.js keeps the low 32 bits
+    const bytes = ended ? n - 1 : 4;
+    if (o + bytes > cap) return result(true, false);
     for (let k = 0; k < bytes; k++) out[o++] = (word >>> (24 - 8 * k)) & 0xff;
+    if (ended) return result(false, true);
   }
-  return { data: out.subarray(0, o), over: false };
 }
 
 // A PDF name: "/" then regular characters, where "#hh" is an escaped byte. The alternatives can't overlap, so matching
@@ -346,6 +378,16 @@ export async function checkPdf(buf: Buffer, limits: PdfLimits = defaultPdfLimits
     throw new HttpError(422, ENCRYPTED_PDF_MESSAGE, "file_too_complex");
   }
   let total = 0;
+  // Text stages of well-formed files never overlap, so together they read at most the whole file. Crafted files with
+  // streams nested inside other streams' data could make each decode rescan the same bytes; this budget keeps the
+  // guard linear and refuses them.
+  let textScanned = 0;
+  const decodeText = (start: number, kind: "ascii85" | "asciihex", cap: number) => {
+    const decoded = decodeTextStage(buf, start, kind, cap);
+    textScanned += decoded.scanned;
+    if (decoded.over || !decoded.complete || textScanned > buf.length) throw unsafe();
+    return decoded.data;
+  };
   for (const body of objectBodies(buf)) {
     const stream = readStreamDict(buf, body);
     if (!stream) continue;
@@ -361,9 +403,7 @@ export async function checkPdf(buf: Buffer, limits: PdfLimits = defaultPdfLimits
     const cap = Math.min(limits.maxStreamBytes, limits.maxTotalBytes - total);
     if (!names.length) {
       // A text encoding on its own.
-      const { data, over } = decodeTextStage(buf, start, text!, cap);
-      if (over) throw unsafe();
-      total += data.length;
+      total += decodeText(start, text!, cap).length;
       continue;
     }
     const [name] = names;
@@ -375,9 +415,7 @@ export async function checkPdf(buf: Buffer, limits: PdfLimits = defaultPdfLimits
     let source = buf;
     let from = start;
     if (text) {
-      const decoded = decodeTextStage(buf, start, text, cap);
-      if (decoded.over) throw unsafe();
-      source = decoded.data;
+      source = decodeText(start, text, cap);
       from = 0;
     }
     const { size, over } = await countInflated(source, from, cap);

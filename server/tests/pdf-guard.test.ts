@@ -216,15 +216,71 @@ describe("PDF guard: ASCII85/ASCIIHex text encodings (owner decision 2026-09-27)
     await unsafe(makePdfWithStreams("x", [each, each, each]), LOW);
   });
 
-  it("decodes both encodings like pdf.js: whitespace, end markers, partial groups, invalid characters", () => {
+  it("decodes both encodings exactly like pdf.js: whitespace, markers, partial groups, invalid bytes", () => {
+    const decode = (text: string | Buffer, kind: "ascii85" | "asciihex", cap = 1024) =>
+      decodeTextStage(Buffer.isBuffer(text) ? text : Buffer.from(text, "latin1"), 0, kind, cap);
     const sample = Buffer.from("Resume text: Python, SQL \u0000\u0000\u0000\u0000 and more.", "latin1");
-    assert.deepEqual(decodeTextStage(ascii85(sample), 0, "ascii85", 1024).data, sample);
-    assert.deepEqual(decodeTextStage(Buffer.concat([Buffer.from("<~"), ascii85(sample)]), 0, "ascii85", 1024).data, sample, "optional <~ prefix");
-    assert.deepEqual(decodeTextStage(asciiHex(sample), 0, "asciihex", 1024).data, sample);
-    assert.deepEqual(decodeTextStage(Buffer.from("4 1 4>"), 0, "asciihex", 1024).data, Buffer.from([0x41, 0x40]), "odd final digit is padded with 0");
-    assert.deepEqual(decodeTextStage(Buffer.from("4142zz~>ignored"), 0, "asciihex", 1024).data, Buffer.from("AB"), "stops at an invalid character");
-    assert.deepEqual(decodeTextStage(Buffer.from("87cURD]i,\"Ebo80~>"), 0, "ascii85", 1024).data, Buffer.from("Hello World!"));
-    assert.equal(decodeTextStage(Buffer.from("zz~>"), 0, "ascii85", 7).over, true, "cap applies mid-stream");
+    assert.deepEqual(decode(ascii85(sample), "ascii85").data, sample);
+    assert.deepEqual(decode(asciiHex(sample), "asciihex").data, sample);
+    assert.deepEqual(decode("87cURD]i,\"Ebo80~>", "ascii85").data, Buffer.from("Hello World!"));
+    // ASCIIHex: every non-hex byte is skipped (pdf.js does the same); ">" ends it; an odd last digit gets a 0 nibble.
+    assert.deepEqual(decode("4 1 4>", "asciihex").data, Buffer.from([0x41, 0x40]));
+    assert.deepEqual(decode("41zz~42>", "asciihex").data, Buffer.from("AB"));
+    // ASCII85: "<~" is not special to pdf.js ("<" is a digit, "~" ends the stage), so it decodes to nothing.
+    assert.deepEqual(decode("<~87cURD~>", "ascii85"), { data: Buffer.alloc(0), over: false, complete: true, scanned: 2 });
+    // NUL and form feed are digits to pdf.js, not whitespace.
+    assert.equal(decode("\u0000\u0000\u0000\u0000\u0000~>", "ascii85").data.length, 4);
+    assert.equal(decode("zz~>", "ascii85", 7).over, true, "cap applies mid-stream");
+    // An "e" in the last bytes of the file must not be compared past the end (it used to throw instead of answering).
+    assert.deepEqual(decode("41e", "asciihex"), { data: Buffer.from("A"), over: false, complete: false, scanned: 3 });
+    assert.equal(decode("87cURDe", "ascii85").complete, false);
+  });
+
+  it("decodes an out-of-range ASCII85 digit the way pdf.js does, so a bomb can't hide behind one", async () => {
+    // Borrow one from the first digit into the second: "bc" and "a" + String.fromCharCode("c".charCodeAt(0) + 85) encode
+    // the same value, but the second digit is outside "!".."u". pdf.js still decodes it; a decoder that stopped there
+    // would measure almost nothing.
+    const withBorrow = (encoded: Buffer) => {
+      const s = encoded.toString("latin1");
+      const i = s.search(/[#-u][!-u]{4}/); // first full group whose first digit can lend 1
+      assert.ok(i >= 0);
+      const shifted = String.fromCharCode(s.charCodeAt(i) - 1, s.charCodeAt(i + 1) + 85);
+      return Buffer.from(s.slice(0, i) + shifted + s.slice(i + 2), "latin1");
+    };
+    const page = withBorrow(ascii85(flate(content)));
+    assert.match(page.toString("latin1"), /[\x76-\xff]/);
+    const pdf = makePdfWithStreams("", [], { contentDict: "/Filter [ /ASCII85Decode /FlateDecode ]", contentData: page });
+    await checkPdf(pdf);
+    assert.match(await extractText(pdf, "cv.pdf", ["pdf"]), /Built data pipelines with Python and SQL/, "pdf.js decodes it the same way");
+
+    const bomb = withBorrow(ascii85(flate(spaces(LOW.maxStreamBytes + 1))));
+    forbidPdfJs();
+    await unsafe(makePdfWithStreams("x", [{ dict: "/Filter [ /ASCII85Decode /FlateDecode ]", data: bomb }]), LOW);
+  });
+
+  it("refuses text stages whose end marker doesn't come before endstream", async () => {
+    const noMarker = (data: Buffer) => data.subarray(0, data.lastIndexOf(data.includes("~>") ? "~>" : ">"));
+    for (const [dict, data] of [
+      ["/Filter /ASCII85Decode", noMarker(ascii85(content))],
+      ["/Filter [ /ASCII85Decode /FlateDecode ]", noMarker(ascii85(flate(content)))],
+      ["/Filter /ASCIIHexDecode", noMarker(asciiHex(content))],
+      ["/Filter [ /ASCIIHexDecode /FlateDecode ]", noMarker(asciiHex(flate(content)))],
+      // "endstream" inside the data before the marker: pdf.js could end the stream there or later, so refuse.
+      ["/Filter /ASCII85Decode", Buffer.concat([Buffer.from("87cURDendstream"), ascii85(content)])],
+    ] as const) {
+      await unsafe(makePdfWithStreams("x", [{ dict, data }]));
+    }
+  });
+
+  it("stays linear when streams are nested inside another stream's data (no repeated rescans)", async () => {
+    // Thousands of fake ASCII85 streams whose data all runs to the same far-away "~": each would rescan the rest of
+    // the file. The scan budget (at most the file size in total) refuses the file after a couple of passes.
+    const fake = Buffer.from("7 0 obj << /Filter /A85 >> stream\n", "latin1");
+    const body = Buffer.concat([...Array.from({ length: 4000 }, () => fake), Buffer.alloc(200 * KB, 0x41), Buffer.from("~>")]);
+    const pdf = makePdfWithStreams("x", [{ dict: "/Filter /ASCII85Decode", data: body }]);
+    const started = Date.now();
+    await unsafe(pdf);
+    assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
   });
 });
 

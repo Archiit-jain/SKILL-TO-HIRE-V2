@@ -85,9 +85,12 @@ chars without `<>` or control characters. All SQL uses prepared statements with 
   - Allowed stream filters: none, a single `FlateDecode`, or a single image codec that text extraction doesn't expand
     (DCT, JPX, CCITTFax, JBIG2). Since 2026-09-27 (owner decision SEC-D3b) also a text encoding (`ASCII85Decode`/`A85`,
     `ASCIIHexDecode`/`AHx`) on its own or as the single stage in front of `FlateDecode`, e.g.
-    `[/ASCII85Decode /FlateDecode]` as written by ReportLab. The guard decodes that stage itself (linear, capped: the
-    only expanding form is ASCII85's `z`, four zero bytes per character) and then measures the Flate output exactly as
-    below. LZW, RunLength, Crypt, unknown filters, all other chains (for example `[/FlateDecode /DCTDecode]`, a text
+    `[/ASCII85Decode /FlateDecode]` as written by ReportLab. The guard decodes that stage itself exactly like pdf.js
+    (ASCII85 folds every non-whitespace byte into the arithmetic and only space/tab/CR/LF are whitespace; ASCIIHex
+    skips non-hex bytes), so it never decodes less than pdf.js would. The stage must end with its marker (`~` / `>`)
+    before the next `endstream`, otherwise the file is refused. Output is capped (the only expanding form is ASCII85's
+    `z`, four zero bytes per character), all text stages together may read at most the file's size (so streams nested
+    inside other streams can't force repeated rescans), and the Flate output is then measured exactly as below. LZW, RunLength, Crypt, unknown filters, all other chains (for example `[/FlateDecode /DCTDecode]`, a text
     encoding after Flate or before an image codec, two text encodings) and indirect `/Filter` values are rejected.
   - Every Flate stream is inflated in 64 KB chunks, counting and discarding the output, until the deflate stream really
     ends. `/Length` and `endstream` are not trusted. One stream > 10 MB or all streams > 30 MB → rejected.
