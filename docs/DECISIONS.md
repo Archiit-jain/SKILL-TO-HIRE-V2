@@ -112,7 +112,8 @@ Branch `security/remediation`. IDs are prefixed `SEC-` so they don't clash with 
 |---|---|---|---|
 | SEC-D1 | V2 stays **preview-only** on Vercel with the per-instance `/tmp` SQLite; no hosted database yet (documentation in P1) | P1 | docs |
 | SEC-D2 | DOCX caps: 20 MB declared archive total, 4 MB per XML/rels part, 4 MB all XML/rels, 2,000 entries (PROVISIONAL; peak memory measured and reported, see `SECURITY.md`) | P0 | `config.upload`, `analysis/docx-guard.ts` |
-| SEC-D3 | PDF caps: Flate 10 MB per stream, 30 MB per document; reject encrypted PDFs, LZW, RunLength, ASCII85/ASCIIHex, unsupported and chained filters → `422 file_too_complex` | P0 | `config.upload`, `analysis/pdf-guard.ts` |
+| SEC-D3 | PDF caps: Flate 10 MB per stream, 30 MB per document; reject encrypted PDFs, LZW, RunLength, ASCII85/ASCIIHex, unsupported and chained filters → `422 file_too_complex` (ASCII85/ASCIIHex relaxed by SEC-D3b) | P0 | `config.upload`, `analysis/pdf-guard.ts` |
+| SEC-D3b | (2026-09-27, owner decision) Accept ASCII85/ASCIIHex on their own or as the single stage before FlateDecode. Reason: a 2.7 KB ReportLab-generated sample resume using `[/ASCII85Decode /FlateDecode]` was refused on production. The guard decodes the text stage exactly like pdf.js (never less), requires the stage's end marker before `endstream`, bounds total text-stage scanning to the file size, and still measures the Flate output; caps unchanged; all other chains still rejected | P0 follow-up | `analysis/pdf-guard.ts` |
 | SEC-D5 | At most 2 simultaneous document parses per instance → `503 server_busy`, `Retry-After: 5` (password-hash slots follow in P1) | P0 | `config.upload`, `analysis/parse-slots.ts` |
 | SEC-R5 | Encrypted PDFs get the specific message "Encrypted or password-protected PDFs aren't supported. Please upload an unprotected PDF." | P0 | `analysis/pdf-guard.ts` |
 

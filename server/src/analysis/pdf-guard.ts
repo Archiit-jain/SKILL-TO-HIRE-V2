@@ -37,6 +37,17 @@ export const defaultPdfLimits = (): PdfLimits => ({
 const CHUNK = 64 * 1024;
 const FLATE = new Set(["FlateDecode", "Fl"]);
 const NON_EXPANDING_IMAGE_CODECS = new Set(["DCTDecode", "DCT", "JPXDecode", "CCITTFaxDecode", "CCF", "JBIG2Decode"]);
+/**
+ * Text encodings of binary data (owner decision 2026-09-27, extends SEC-D3). Allowed on their own or as the single
+ * stage in front of FlateDecode, e.g. [/ASCII85Decode /FlateDecode] as written by ReportLab. The guard decodes them
+ * itself, with the same caps, so the Flate output is still measured.
+ */
+const TEXT_ENCODINGS: Record<string, "ascii85" | "asciihex"> = {
+  ASCII85Decode: "ascii85",
+  A85: "ascii85",
+  ASCIIHexDecode: "asciihex",
+  AHx: "asciihex",
+};
 
 // ---------------------------------------------------------------------------------------------- tokeniser
 const WHITESPACE = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
@@ -243,6 +254,108 @@ function countInflated(b: Buffer, start: number, cap: number): Promise<{ size: n
   });
 }
 
+/** pdf.js's isWhiteSpace(): only space, tab, CR and LF. NUL and form feed are ASCII85 digits to pdf.js. */
+const isPdfJsSpace = (c: number) => c === 0x20 || c === 0x09 || c === 0x0d || c === 0x0a;
+const ENDSTREAM = Buffer.from("endstream", "latin1");
+const atEndstream = (b: Buffer, i: number) =>
+  b[i] === 0x65 && i + ENDSTREAM.length <= b.length && b.compare(ENDSTREAM, 0, ENDSTREAM.length, i, i + ENDSTREAM.length) === 0;
+
+export interface TextStageResult {
+  data: Buffer;
+  /** Output went past `cap`. */
+  over: boolean;
+  /** The stage's end marker ("~" or ">") was found before the next "endstream" and before the end of the file. */
+  complete: boolean;
+  /** Input bytes read, including the end marker. */
+  scanned: number;
+}
+
+/**
+ * Decodes an ASCII85 or ASCIIHex stage exactly like pdf.js 5.4 (Ascii85Stream / AsciiHexStream), from `start` to the
+ * stage's end marker. pdf.js does not stop at invalid characters: ASCII85 folds every non-whitespace byte into the
+ * arithmetic, ASCIIHex skips every non-hex byte. It stops only at the marker ("~" / ">") or the end of the stream
+ * data, so decoding up to the marker yields at least what pdf.js decodes, never less.
+ *
+ * A stream whose marker doesn't come before the next "endstream" (or the end of the file) is reported as incomplete
+ * and refused by the caller: pdf.js's stream end is always at or after that first "endstream", so the marker would
+ * be the only stop both sides agree on. Output beyond `cap` stops decoding with `over`; the only expanding form is
+ * ASCII85's "z" (one character for four zero bytes). Linear in the bytes scanned.
+ */
+export function decodeTextStage(b: Buffer, start: number, kind: "ascii85" | "asciihex", cap: number): TextStageResult {
+  const remaining = Math.max(0, b.length - start);
+  const out = Buffer.allocUnsafe(Math.max(0, Math.min(cap + 4, kind === "ascii85" ? remaining * 4 : Math.ceil(remaining / 2))));
+  let o = 0;
+  let i = start;
+  const result = (over: boolean, complete: boolean): TextStageResult => ({ data: out.subarray(0, o), over, complete, scanned: i - start });
+
+  if (kind === "asciihex") {
+    let hi = -1;
+    for (; i < b.length; i++) {
+      if (atEndstream(b, i)) return result(false, false);
+      const c = b[i];
+      const v = c >= 0x30 && c <= 0x39 ? c - 0x30 : c >= 0x41 && c <= 0x46 ? c - 0x37 : c >= 0x61 && c <= 0x66 ? c - 0x57 : -1;
+      if (v < 0) {
+        if (c !== 0x3e) continue; // pdf.js skips every other byte
+        i++;
+        if (hi >= 0) {
+          if (o + 1 > cap) return result(true, true);
+          out[o++] = hi << 4; // an odd final digit, completed by ">"
+        }
+        return result(false, true);
+      }
+      if (hi < 0) {
+        hi = v;
+        continue;
+      }
+      if (o + 1 > cap) return result(true, false);
+      out[o++] = (hi << 4) | v;
+      hi = -1;
+    }
+    return result(false, false);
+  }
+
+  // ASCII85: groups of five digits (any non-whitespace byte, value = byte - 33), "z" at a group start = four zeros.
+  const next = (): number => {
+    for (; i < b.length; i++) {
+      if (atEndstream(b, i)) return -2;
+      if (!isPdfJsSpace(b[i])) return b[i++];
+    }
+    return -1;
+  };
+  const digits = [0, 0, 0, 0, 0];
+  for (;;) {
+    const first = next();
+    if (first < 0) return result(false, false); // no "~" before endstream / end of file
+    if (first === 0x7e) return result(false, true); // "~"
+    if (first === 0x7a) {
+      if (o + 4 > cap) return result(true, false);
+      out.fill(0, o, o + 4);
+      o += 4;
+      continue;
+    }
+    digits[0] = first;
+    let n = 1;
+    let ended = false;
+    for (; n < 5; n++) {
+      const c = next();
+      if (c < 0) return result(false, false);
+      if (c === 0x7e) {
+        ended = true;
+        break;
+      }
+      digits[n] = c;
+    }
+    for (let k = n; k < 5; k++) digits[k] = 0x75; // a partial group is padded with "u"
+    let s = 0;
+    for (let k = 0; k < 5; k++) s = s * 85 + (digits[k] - 33);
+    const word = ((s % 0x100000000) + 0x100000000) % 0x100000000; // pdf.js keeps the low 32 bits
+    const bytes = ended ? n - 1 : 4;
+    if (o + bytes > cap) return result(true, false);
+    for (let k = 0; k < bytes; k++) out[o++] = (word >>> (24 - 8 * k)) & 0xff;
+    if (ended) return result(false, true);
+  }
+}
+
 // A PDF name: "/" then regular characters, where "#hh" is an escaped byte. The alternatives can't overlap, so matching
 // stays linear on hostile input.
 const NAME = /\/((?:[^\s/<>[\]()%{}#\x00]|#[0-9a-fA-F]{2})+)/g;
@@ -265,18 +378,47 @@ export async function checkPdf(buf: Buffer, limits: PdfLimits = defaultPdfLimits
     throw new HttpError(422, ENCRYPTED_PDF_MESSAGE, "file_too_complex");
   }
   let total = 0;
+  // Text stages of well-formed files never overlap, so together they read at most the whole file. Crafted files with
+  // streams nested inside other streams' data could make each decode rescan the same bytes; this budget keeps the
+  // guard linear and refuses them.
+  let textScanned = 0;
+  const decodeText = (start: number, kind: "ascii85" | "asciihex", cap: number) => {
+    const decoded = decodeTextStage(buf, start, kind, cap);
+    textScanned += decoded.scanned;
+    if (decoded.over || !decoded.complete || textScanned > buf.length) throw unsafe();
+    return decoded.data;
+  };
   for (const body of objectBodies(buf)) {
     const stream = readStreamDict(buf, body);
     if (!stream) continue;
     const { filter } = stream;
     if (filter.kind === "unsupported") throw unsafe();
     if (filter.kind === "none") continue;
-    if (filter.names.length !== 1) throw unsafe(); // chained filters
-    const [name] = filter.names;
-    if (NON_EXPANDING_IMAGE_CODECS.has(name)) continue;
-    if (!FLATE.has(name)) throw unsafe(); // LZW, RunLength, ASCII85, ASCIIHex, Crypt, unknown
+    const names = [...filter.names];
+    // At most one text-encoding stage, and only in front (it is decoded first).
+    const text = TEXT_ENCODINGS[names[0]];
+    if (text) names.shift();
+    if (names.length > 1) throw unsafe(); // any other chain
+    const start = dataStart(buf, stream.afterKeyword);
     const cap = Math.min(limits.maxStreamBytes, limits.maxTotalBytes - total);
-    const { size, over } = await countInflated(buf, dataStart(buf, stream.afterKeyword), cap);
+    if (!names.length) {
+      // A text encoding on its own.
+      total += decodeText(start, text!, cap).length;
+      continue;
+    }
+    const [name] = names;
+    if (NON_EXPANDING_IMAGE_CODECS.has(name)) {
+      if (text) throw unsafe(); // [/ASCII85Decode /DCTDecode] and similar stay outside the approved policy
+      continue;
+    }
+    if (!FLATE.has(name)) throw unsafe(); // LZW, RunLength, Crypt, a second text encoding, unknown
+    let source = buf;
+    let from = start;
+    if (text) {
+      source = decodeText(start, text, cap);
+      from = 0;
+    }
+    const { size, over } = await countInflated(source, from, cap);
     if (over) throw unsafe();
     total += size;
   }

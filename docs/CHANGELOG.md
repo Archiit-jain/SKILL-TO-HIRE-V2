@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-27 — PDF text encodings (SEC-D3b)
+
+- The PDF guard accepts `ASCII85Decode`/`ASCIIHexDecode` on their own or in front of `FlateDecode` (common in
+  ReportLab-generated PDFs, which were refused as "too large or complex"). It decodes the text stage itself with the
+  same cap and measures the Flate output against the unchanged 10 MB / 30 MB limits. Other chains stay refused.
+
 ## Unreleased — hackathon release (branch `feature/hackathon-release`)
 
 ### Persistence
