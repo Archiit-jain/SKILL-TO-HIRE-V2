@@ -36,6 +36,20 @@
 - Banner shown only when the server reports temporary storage. Auth and Settings privacy copy corrected (the
   Gemini data flow is disclosed); dead "resend" button for a removed error code deleted.
 
+### Theme and navigation
+- Light (whiteish-green) and dark (blackish-green) themes with a parrot-green accent, built from CSS variables in
+  `src/index.css` and mapped onto Tailwind colours, so one `dark` class on `<html>` switches the whole app. The
+  sidebar, hero preview and score card stay dark in both themes (`ink`/`parrot` palettes).
+- The theme follows the device setting and can be overridden with a toggle (sidebar, mobile header, sign-in screen);
+  the choice is remembered. `public/theme-init.js` applies it before first paint, so there is no light flash.
+- Self-hosted fonts (`@fontsource-variable`): Space Grotesk for headings, Plus Jakarta Sans for body text. No
+  external font requests, so the Content-Security-Policy is unchanged.
+- Home page motion: scroll reveals, drifting background glows, a floating sample card and a shimmering headline
+  accent - all disabled under `prefers-reduced-motion`.
+- The sidebar collapses to an icon rail at every width (drawer on phones); the choice is remembered.
+- Navigation items that need an account no longer show a lock or look disabled: they behave like normal buttons and
+  take guests to the sign-in screen.
+
 ## Unreleased — security remediation P2 and P3 (branch `security/remediation`)
 
 ### Security

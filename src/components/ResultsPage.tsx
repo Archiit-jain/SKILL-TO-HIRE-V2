@@ -44,8 +44,17 @@ function ScoreRing({ score }: { score: number }) {
   const clamped = Math.max(0, Math.min(100, score));
   return (
     <svg viewBox="0 0 120 120" className="w-28 h-28 sm:w-32 sm:h-32 -rotate-90" aria-hidden="true">
-      <circle cx="60" cy="60" r={r} fill="none" stroke="rgb(51 65 85)" strokeWidth="10" />
-      <circle cx="60" cy="60" r={r} fill="none" stroke="rgb(34 211 238)" strokeWidth="10" strokeLinecap="round" strokeDasharray={`${(clamped / 100) * c} ${c}`} />
+      <circle cx="60" cy="60" r={r} fill="none" strokeWidth="10" className="stroke-ink-700" />
+      <circle
+        cx="60"
+        cy="60"
+        r={r}
+        fill="none"
+        strokeWidth="10"
+        strokeLinecap="round"
+        strokeDasharray={`${(clamped / 100) * c} ${c}`}
+        className="stroke-parrot-400 transition-[stroke-dasharray] duration-700"
+      />
     </svg>
   );
 }
@@ -211,33 +220,33 @@ export function ResultsPage({ result, onNavigate, isGuest, onSignIn }: ResultsPa
       )}
 
       {/* Score */}
-      <Card className="mb-6 border-0 bg-gradient-to-br from-slate-900 to-slate-800 text-white">
+      <Card className="mb-6 border-0 bg-gradient-to-br from-ink-900 to-ink-800 text-ink-50">
         <CardContent className="p-6 sm:p-8">
           <div className="flex flex-col-reverse gap-6 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-300">Match score</p>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-ink-300">Match score</p>
               <div className="flex items-end gap-2">
-                <span className="text-5xl font-bold sm:text-6xl">{score}</span>
-                <span className="mb-2 text-xl text-slate-400">/ 100</span>
+                <span className="font-display text-5xl font-bold sm:text-6xl">{score}</span>
+                <span className="mb-2 text-xl text-ink-300">/ 100</span>
               </div>
-              <p className="mt-3 text-slate-200">
+              <p className="mt-3 text-ink-100">
                 {result.strongSkills.length} strong · {result.partialSkills.length} partial · {result.missingSkills.length} missing
                 {required.length > 0 && (
                   <>
                     {" "}
-                    · <span className="font-semibold text-white">{requiredPresent} of {required.length}</span> required skills present
+                    · <span className="font-semibold text-ink-50">{requiredPresent} of {required.length}</span> required skills present
                   </>
                 )}
               </p>
-              <p className="mt-2 max-w-xl text-sm text-slate-400">
+              <p className="mt-2 max-w-xl text-sm text-ink-300">
                 The score reflects what your resume shows against this job description. It isn't a prediction of a hiring decision.
               </p>
               {result.confidence && (
                 <details className="mt-4 max-w-xl">
-                  <summary className="cursor-pointer text-sm text-cyan-300 hover:text-cyan-200">
+                  <summary className="cursor-pointer text-sm text-parrot-300 hover:text-parrot-200">
                     {result.confidence.level.charAt(0).toUpperCase() + result.confidence.level.slice(1)} confidence - why?
                   </summary>
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-300">
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink-200">
                     {result.confidence.reasons.map((r) => (
                       <li key={r}>{r}</li>
                     ))}

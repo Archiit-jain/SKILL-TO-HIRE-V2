@@ -98,6 +98,11 @@ commit and push the branch (no PR, no merge); a **tuned synthetic sample** run t
 | HR-12 | Roadmap is generated on the server, ordered by requirement group with prerequisite pull-forward; no dates or durations | `roadmap.ts` |
 | HR-13 | Sample analysis: synthetic documents, fixed date 2026-03-01, computed per instance, never stored; its assistant is rules-only and shares the existing 60/h assistant IP limit (no new limit) | `demo.ts`, `routes/demo.ts` |
 | HR-14 | Authenticated browser flows are verified by an API-level journey test rather than by typing credentials into the browser | `journey.test.ts` |
+| HR-15 | Colours come from CSS variables mapped onto Tailwind's palettes, so light/dark is one class on `<html>`; `ink`/`parrot` stay fixed for surfaces that are dark in both themes | `src/index.css`, `tailwind.config.js` |
+| HR-16 | Theme follows the system setting until the user picks one with the toggle (stored in localStorage, applied pre-paint by `public/theme-init.js`) | `src/lib/theme.ts` |
+| HR-17 | Fonts are self-hosted through `@fontsource-variable` rather than Google Fonts, which the CSP would block and which would send visitor IPs to Google | `src/main.tsx` |
+| HR-18 | Home-page motion is decorative and removed under `prefers-reduced-motion`; no motion elsewhere | `index.css`, `useReveal.ts` |
+| HR-19 | Account-only navigation items look and behave like normal buttons and route guests to sign-in (no lock icons or disabled styling) | `Sidebar.tsx`, `App.tsx` |
 
 ## Security remediation decisions (approved by the owner, 2026-09-14)
 

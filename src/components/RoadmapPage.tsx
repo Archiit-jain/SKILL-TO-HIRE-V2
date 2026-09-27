@@ -174,14 +174,14 @@ export function RoadmapPage({ analysisResult, onNavigate }: RoadmapPageProps) {
         </details>
       )}
 
-      <Card className="mt-8 border-0 bg-gradient-to-br from-cyan-500 to-cyan-600 text-white">
+      <Card className="mt-8 border-0 bg-gradient-to-br from-parrot-500 to-parrot-600 text-ink-950">
         <CardContent className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center">
           <RefreshCw className="hidden h-8 w-8 shrink-0 sm:block" aria-hidden="true" />
           <div className="flex-1">
             <h3 className="mb-1 font-semibold">Re-analyze to check progress</h3>
-            <p className="text-sm text-cyan-50">After updating your resume, run the analysis again with the same job description to see which ratings changed.</p>
+            <p className="text-sm text-ink-900">After updating your resume, run the analysis again with the same job description to see which ratings changed.</p>
           </div>
-          <Button className="bg-white text-cyan-700 hover:bg-cyan-50" onClick={() => onNavigate("analysis")}>
+          <Button className="bg-ink-950 text-parrot-100 hover:bg-ink-900" onClick={() => onNavigate("analysis")}>
             Re-analyze
           </Button>
         </CardContent>
